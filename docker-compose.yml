@@ -1,0 +1,37 @@
+# 表单维护 APP
+# 用法：
+#   1) 可选：把 .env.example 复制为 .env
+#   2) docker compose up -d --build
+#   3) 浏览器访问 http://<服务器IP>:8086
+# 重置演示数据：docker compose run --rm -e FORCE_SEED=1 srpm true 后重启，
+#   或 docker compose exec srpm node /app/server/src/seed.js
+services:
+  srpm:
+    build:
+      context: .
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+    image: form-maintenance-app:8092
+    container_name: form-maintenance-8092
+    ports:
+      - "${SRPM_PORT:-8092}:8787"
+    environment:
+      TZ: Asia/Shanghai
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      AI_API_KEY: ${GLM_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      AI_MODEL: ${AI_MODEL:-glm-5.2}
+      FORCE_SEED: ${FORCE_SEED:-}
+      # 备份目录（容器内）；宿主机映射见下方 volumes，与 data 卷分离防同损
+      BACKUP_DIR: ${BACKUP_DIR:-/app/server/backups}
+      BACKUP_ENV: ${BACKUP_ENV:-prod114}
+      BACKUP_GZIP: ${BACKUP_GZIP:-1}
+    volumes:
+      - form-maintenance-data:/app/server/data
+      # 异卷冷备：宿主机项目目录下 backups/，不进 Docker named volume
+      - ./backups:/app/server/backups
+    restart: unless-stopped
+
+volumes:
+  form-maintenance-data:

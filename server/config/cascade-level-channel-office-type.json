@@ -1,0 +1,91 @@
+{
+  "version": "1.0.0",
+  "updated": "2026-07-14",
+  "title": "层级·渠道(C)·司局/处室·项目类型(D) 双向级联配置",
+  "rules": {
+    "excelColumns": { "level": "B", "sourceChannel": "C", "projectType": "D" },
+    "orgOfficeInExcel": false,
+    "orgOfficeField": "orgOffice",
+    "companyOfficeIsInternal": true,
+    "bidirectional": true,
+    "note": "单一权威配置。司局仅筛选/编辑辅助不写 Excel；公司级司局=内部处室。复现时只改本文件并同步到 server/config。"
+  },
+  "levels": ["国家级", "地方级", "公司级"],
+  "tree": {
+    "国家级": {
+      "工信部": {
+        "装备二司": ["MJKY"],
+        "装备一司": ["国家科技重大专项--04专项"],
+        "高新技术司": ["1025"]
+      },
+      "科技部": {
+        "国自然": ["下一代国家重点研发计划", "大飞机基础研究联合基金", "新材料2030专项"]
+      },
+      "发改委": {
+        "高技术司": ["FGW第一批GXJC项目"]
+      }
+    },
+    "地方级": {
+      "市科委": {
+        "空天海洋处": ["上海市科技攻关揭榜挂帅", "上海市科委、经信委项目"]
+      }
+    },
+    "公司级": {
+      "ZGSF": {
+        "科研项目处": [
+          "预研三年",
+          "重大科技创新",
+          "新疆气象中心项目",
+          "波音合作",
+          "实验室",
+          "科技委技术发展课题",
+          "KT",
+          "XP",
+          "高质量专项"
+        ],
+        "科技发展处": [
+          "科技周",
+          "大飞机研究院-南航",
+          "大飞机研究院-西工",
+          "大飞机研究院-同济",
+          "大飞机研究院-上海交大",
+          "大飞机研究院-北航",
+          "大飞机研究院-重庆大学",
+          "大飞机研究院-香港理工",
+          "大飞机研究院-中国民航大学"
+        ],
+        "技术基础处": ["大飞机先进材料创新联盟"]
+      }
+    }
+  },
+  "paths": [
+    { "level": "国家级", "sourceChannel": "工信部", "orgOffice": "装备二司", "projectType": "MJKY" },
+    { "level": "国家级", "sourceChannel": "工信部", "orgOffice": "装备一司", "projectType": "国家科技重大专项--04专项" },
+    { "level": "国家级", "sourceChannel": "工信部", "orgOffice": "高新技术司", "projectType": "1025" },
+    { "level": "国家级", "sourceChannel": "科技部", "orgOffice": "国自然", "projectType": "下一代国家重点研发计划" },
+    { "level": "国家级", "sourceChannel": "科技部", "orgOffice": "国自然", "projectType": "大飞机基础研究联合基金" },
+    { "level": "国家级", "sourceChannel": "科技部", "orgOffice": "国自然", "projectType": "新材料2030专项" },
+    { "level": "国家级", "sourceChannel": "发改委", "orgOffice": "高技术司", "projectType": "FGW第一批GXJC项目" },
+    { "level": "地方级", "sourceChannel": "市科委", "orgOffice": "空天海洋处", "projectType": "上海市科技攻关揭榜挂帅" },
+    { "level": "地方级", "sourceChannel": "市科委", "orgOffice": "空天海洋处", "projectType": "上海市科委、经信委项目" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "预研三年" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "重大科技创新" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "新疆气象中心项目" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "波音合作" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "实验室" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "科技委技术发展课题" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "KT" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "XP" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科研项目处", "projectType": "高质量专项" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "科技周" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-南航" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-西工" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-同济" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-上海交大" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-北航" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-重庆大学" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-香港理工" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "科技发展处", "projectType": "大飞机研究院-中国民航大学" },
+    { "level": "公司级", "sourceChannel": "ZGSF", "orgOffice": "技术基础处", "projectType": "大飞机先进材料创新联盟" }
+  ]
+}

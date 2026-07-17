@@ -1,0 +1,19 @@
+{
+  "name": "form-maintenance-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "表单维护 APP · 独立运行",
+
+  "scripts": {
+    "setup": "npm install && npm install --prefix server && npm install --prefix web",
+    "seed": "node server/src/seed.js",
+    "server": "node server/src/index.js",
+    "web": "npm run dev --prefix web",
+    "dev": "concurrently -n server,web -c blue,cyan \"npm run server\" \"npm run web\"",
+    "build": "npm run build --prefix web",
+    "demo": "node server/src/seed.js && npm run build --prefix web && node server/src/index.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

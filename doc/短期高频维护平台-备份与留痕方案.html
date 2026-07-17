@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>表单维护 APP · 短期高频维护场景 · 备份与留痕方案</title>
+  <style>
+    :root {
+      --bg: #0e1419;
+      --bg2: #151c24;
+      --panel: #1a232d;
+      --line: rgba(160, 180, 200, 0.14);
+      --ink: #eef3f7;
+      --dim: #9eb0c0;
+      --faint: #6f8294;
+      --accent: #f0a45c;
+      --accent2: #5eb8d4;
+      --accent-dim: rgba(240, 164, 92, 0.12);
+      --ok: #6cbc8d;
+      --mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+      --sans: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background:
+        radial-gradient(ellipse 800px 420px at 8% 0%, rgba(240, 164, 92, 0.11), transparent 55%),
+        radial-gradient(ellipse 600px 360px at 100% 30%, rgba(94, 184, 212, 0.08), transparent 50%),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.65;
+      font-size: 15px;
+    }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 48px 24px 80px; }
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.2em;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: clamp(1.55rem, 3vw, 1.95rem);
+      font-weight: 700;
+      line-height: 1.28;
+      margin: 0 0 12px;
+      letter-spacing: -0.02em;
+    }
+    .lead { color: var(--dim); max-width: 680px; margin: 0 0 18px; }
+    .meta {
+      display: flex; flex-wrap: wrap; gap: 10px 18px;
+      font-size: 12.5px; color: var(--faint);
+      padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bottom: 28px;
+    }
+    .meta strong { color: var(--dim); font-weight: 600; }
+
+    .profile {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 36px;
+    }
+    .profile div {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .profile h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      color: var(--accent2);
+      font-weight: 600;
+    }
+    .profile p { margin: 0; font-size: 13px; color: var(--dim); }
+
+    nav.toc {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 36px;
+    }
+    nav.toc h2 { font-size: 13px; margin: 0 0 8px; color: var(--accent); }
+    nav.toc ol { margin: 0; padding-left: 1.2rem; columns: 2; gap: 24px; }
+    nav.toc li { margin: 4px 0; break-inside: avoid; }
+    nav.toc a { color: var(--dim); text-decoration: none; font-size: 13.5px; }
+    nav.toc a:hover { color: var(--accent); }
+
+    section { margin-bottom: 40px; }
+    h2 {
+      font-size: 1.22rem;
+      margin: 0 0 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    h2 .num { font-family: var(--mono); color: var(--accent); margin-right: 8px; font-size: 0.88em; }
+    h3 { font-size: 1.02rem; margin: 20px 0 10px; }
+    p, li { color: var(--dim); }
+    p { margin: 0 0 12px; }
+    ul, ol { margin: 0 0 14px; padding-left: 1.35rem; }
+    li { margin: 5px 0; }
+    strong { color: var(--ink); font-weight: 600; }
+    code { font-family: var(--mono); font-size: 0.9em; color: #d8e4ef; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      margin: 12px 0 16px;
+      background: var(--bg2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      background: rgba(240, 164, 92, 0.08);
+      color: var(--ink);
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    tr:last-child td { border-bottom: none; }
+
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: var(--accent-dim);
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin: 14px 0 16px;
+      font-size: 14px;
+      color: var(--dim);
+    }
+    .callout.ok { border-left-color: var(--ok); background: rgba(108, 188, 141, 0.1); }
+    .callout.blue { border-left-color: var(--accent2); background: rgba(94, 184, 212, 0.1); }
+
+    .vs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 14px 0 18px;
+    }
+    .vs > div {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+      background: var(--panel);
+    }
+    .vs h4 { margin: 0 0 8px; font-size: 13.5px; }
+    .vs .old h4 { color: var(--faint); }
+    .vs .new h4 { color: var(--ok); }
+    .vs ul { margin: 0; padding-left: 1.1rem; font-size: 13px; }
+
+    .dayflow {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin: 12px 0 16px;
+      font-size: 13.5px;
+      color: var(--dim);
+    }
+    .dayflow strong { color: var(--accent2); }
+
+    .phase {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .phase-item {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .phase-item h4 { margin: 0 0 6px; font-size: 14px; color: var(--accent); }
+    .phase-item p { margin: 0; font-size: 13.5px; }
+
+    footer {
+      margin-top: 44px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      font-size: 12.5px;
+      color: var(--faint);
+    }
+
+    @media (max-width: 760px) {
+      .profile, .vs, nav.toc ol { grid-template-columns: 1fr; columns: 1; }
+      .vs { grid-template-columns: 1fr; }
+      .profile { grid-template-columns: 1fr; }
+      .wrap { padding: 28px 16px 56px; }
+    }
+    @media print {
+      body { background: #fff; color: #111; }
+      :root { --ink:#111; --dim:#333; --faint:#555; --bg:#fff; --panel:#f8f8f8; --bg2:#f5f5f5; --line:#ddd; --accent:#c06010; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="eyebrow">SHORT-CYCLE · HIGH-FREQUENCY MAINTENANCE</div>
+    <h1>短期高频维护汇总平台<br />备份与留痕轻量方案</h1>
+    <p class="lead">
+      本平台不是长期主数据系统，而是一轮轮「汇总统稿 / 分表填报 / 校验入库 / 再导出」的短期作业台。
+      风险主要来自<strong>频繁覆盖、误确认、并行维护冲突</strong>，而不是十年级合规仓储。
+      因此采用「战役式保护」：短保留、密检查点、可快速回退、留痕够问责即可。
+    </p>
+    <div class="meta">
+      <span><strong>平台特征</strong> 短期 · 高频 · 汇总维护</span>
+      <span><strong>相对方案</strong> 对上一版企业长留存方案的场景裁剪版</span>
+      <span><strong>版本</strong> V1.0 · 2026-07-15</span>
+    </div>
+
+    <div class="profile">
+      <div>
+        <h3>用得怎样</h3>
+        <p>几天到数周内密集上传、在线改、拆分导出；结束后进入下一轮或归档冻结。</p>
+      </div>
+      <div>
+        <h3>坏得怎样</h3>
+        <p>整表替换抹掉上午成果；主管并发改错；导出的不是刚筛的那一版。</p>
+      </div>
+      <div>
+        <h3>护到什么程度</h3>
+        <p>当天可回退、本轮可追责、收尾可打包带走；不为「永久司法链」过度建设。</p>
+      </div>
+    </div>
+
+    <nav class="toc">
+      <h2>目录</h2>
+      <ol>
+        <li><a href="#p">平台特征与设计取向</a></li>
+        <li><a href="#diff">与长留存方案的差异</a></li>
+        <li><a href="#backup">检查点备份（战役式）</a></li>
+        <li><a href="#log">留痕与短期存档</a></li>
+        <li><a href="#day">一日作业节奏（推荐）</a></li>
+        <li><a href="#security">安全（够用即可）</a></li>
+        <li><a href="#phase">落地阶段</a></li>
+        <li><a href="#done">验收标准（短期场景）</a></li>
+      </ol>
+    </nav>
+
+    <section id="p">
+      <h2><span class="num">01</span>平台特征与设计取向</h2>
+      <table>
+        <thead>
+          <tr><th>特征</th><th>含义</th><th>对备份/留痕的影响</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>短期战役</td>
+            <td>按任务周期使用，非常年 OLTP</td>
+            <td>保留期对齐「本轮任务 + 缓冲周」，不做多年月冻结默认</td>
+          </tr>
+          <tr>
+            <td>高频写入</td>
+            <td>多次预校验、确认入库、分表改、再导出</td>
+            <td>强调<strong>操作前检查点</strong>，而不是只靠夜间日备</td>
+          </tr>
+          <tr>
+            <td>汇总为主</td>
+            <td>总表↔分表合并，产出交付 Excel/ZIP</td>
+            <td>保护「当前工作版」+「最近几个确认版」；交付包可顺带存一份</td>
+          </tr>
+          <tr>
+            <td>角色并行</td>
+            <td>总部与多位类型主管同时维护</td>
+            <td>留痕要能分清「谁改了哪类分表」；冲突以批次/时间线解释</td>
+          </tr>
+          <tr>
+            <td>运维轻</td>
+            <td>内网 Docker，人力有限</td>
+            <td>自动化优先、界面少而硬；避免双人审批、KMS 等重体系</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        <strong>一句话原则：</strong>宁可「一天内多拍几张快照、保留两三周」，也不要「一套重备份制度却挡不住今天下午的一次误替换」。
+      </div>
+    </section>
+
+    <section id="diff">
+      <h2><span class="num">02</span>与长留存方案的差异</h2>
+      <div class="vs">
+        <div class="old">
+          <h4>上一版（偏企业合规）</h4>
+          <ul>
+            <li>月冻结存 1–3 年</li>
+            <li>哈希链 + WORM</li>
+            <li>季演练、双人删档</li>
+            <li>对象存储 / KMS</li>
+          </ul>
+        </div>
+        <div class="new">
+          <h4>本版（短期高频）</h4>
+          <ul>
+            <li>任务周期内密集检查点</li>
+            <li>轻量校验和 + 异目录</li>
+            <li>收尾打包演练即可</li>
+            <li>本机第二路径足够</li>
+          </ul>
+        </div>
+      </div>
+      <p>若后续某轮任务被指定为「正式归档依据」，再对该轮启用加长保留即可（按任务开关），不必全局一直重。</p>
+    </section>
+
+    <section id="backup">
+      <h2><span class="num">03</span>检查点备份（战役式）</h2>
+
+      <h3>3.1 保护什么</h3>
+      <ul>
+        <li><strong>工作库快照：</strong>SQLite 一致性备份（Online Backup），含当前台账与导入批次状态；</li>
+        <li><strong>最近上传原件：</strong>与「待确认 / 已确认」批次绑定的 xlsx（避免只剩库、对不上文件）；</li>
+        <li><strong>任务标签：</strong>如「2026Q3预研汇总-第3轮」，所有检查点挂在同一任务 ID 下，方便整轮带走或整轮丢弃。</li>
+      </ul>
+
+      <h3>3.2 何时拍（比「每天一次」更重要）</h3>
+      <table>
+        <thead>
+          <tr><th>触发</th><th>优先级</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>确认入库 / 整表替换<strong>前</strong></td>
+            <td>P0 必做</td>
+            <td>挡住「一次替换毁掉一上午」；失败应拦截或强告警</td>
+          </tr>
+          <tr>
+            <td>分表合并上传预校验通过后</td>
+            <td>P1</td>
+            <td>多主管并行时，留下合并前可回退点</td>
+          </tr>
+          <tr>
+            <td>总部手动「存一版」</td>
+            <td>P1</td>
+            <td>上午/下午节点或外出前随手拍</td>
+          </tr>
+          <tr>
+            <td>整点 / 每 2–4 小时（任务进行中）</td>
+            <td>P2</td>
+            <td>无人触发时的安全网；任务结束后可关掉</td>
+          </tr>
+          <tr>
+            <td>任务收尾冻结</td>
+            <td>P0</td>
+            <td>打一个「Final」包：库 + 关键上传 + 导出样本哈希</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>3.3 保留多久（对齐短期）</h3>
+      <table>
+        <thead>
+          <tr><th>类型</th><th>保留</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>操作前检查点</td>
+            <td>最近 <strong>20～30 个</strong>，或 <strong>7～14 天</strong></td>
+            <td>分钟～天级回退</td>
+          </tr>
+          <tr>
+            <td>每日末版本</td>
+            <td>本任务周期内每天 1 份，周期结束后再留 <strong>14～30 天</strong></td>
+            <td>隔天找回</td>
+          </tr>
+          <tr>
+            <td>任务 Final 包</td>
+            <td>周期结束后 <strong>30～90 天</strong>（可配置）</td>
+            <td>对本轮汇总结果负责；到期提醒清理</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout ok">
+        不设默认「年备」。磁盘空间优先保证<strong>高频检查点不中断</strong>；过期自动淘汰，避免卷被旧库堆满拖慢平台。
+      </div>
+
+      <h3>3.4 恢复怎么做才「像维护平台」</h3>
+      <ul>
+        <li><strong>一键回退到上一检查点</strong>（旁路恢复预览 → 确认切换），面向总部，而不是只给运维敲命令；</li>
+        <li>回退必须写 audit：谁在何时从哪一拍恢复；</li>
+        <li>默认不挑战「跨任务恢复」；本任务内回退为主。</li>
+      </ul>
+    </section>
+
+    <section id="log">
+      <h2><span class="num">04</span>留痕与短期存档</h2>
+
+      <h3>4.1 仍要回答的问题</h3>
+      <p>在任务进行中与结束后两周内，能说清：</p>
+      <ul>
+        <li>这条记录是谁（工号）改的、改了哪些字段；</li>
+        <li>这次入库依据哪次上传批次；</li>
+        <li>谁导出了全量 / 某专项分表（防误传争论）。</li>
+      </ul>
+
+      <h3>4.2 热库：任务内「够用且快」</h3>
+      <ul>
+        <li>字段 changelog、audit <strong>任务期间全量在线</strong>，不做烦琐冷查询；</li>
+        <li>界面继续用现有「变更明细 / 校验报告」；</li>
+        <li>demo「加载样本」允许清空业务表，但须：先自动打检查点，并在 audit 标明「演示重置」。</li>
+      </ul>
+
+      <h3>4.3 冷存：任务级打包，而不是永动哈希链</h3>
+      <p>任务收尾或每日末，导出一份轻量「本轮留痕包」即可：</p>
+      <ul>
+        <li><code>change_logs_YYYYMMDD.jsonl</code>（或按任务 ID）；</li>
+        <li><code>audit_YYYYMMDD.jsonl</code>；</li>
+        <li><code>manifest.json</code>：行数、类型数、备份文件名、SHA-256；</li>
+        <li>可选：当日出过的关键 Excel 文件名列表（不必重复存巨型包）。</li>
+      </ul>
+      <div class="callout blue">
+        <strong>不做默认区块链级哈希链。</strong>短期场景用「文件级 SHA-256 + 清单」足够防误改；真正要防内部恶意篡改时再对本轮 Final 包加签。
+      </div>
+
+      <h3>4.4 与筛选/导出的关系</h3>
+      <p>
+        本平台下载强依赖当前筛选与角色范围。建议在 audit 中固化：
+        <strong>导出文件名 + 筛选条件摘要 + 行数 + 工号</strong>，
+        这样「我要的类型 / 我下的类型」争议可用日志直接结案，而不靠事后回忆。
+      </p>
+    </section>
+
+    <section id="day">
+      <h2><span class="num">05</span>一日作业节奏（推荐）</h2>
+      <div class="dayflow">
+        <p><strong>开工</strong> → 确认当前任务标签；必要时从昨夜 Daily 恢复。</p>
+        <p><strong>上午维护</strong> → 各主管改分表 / 上传；合并前自动检查点。</p>
+        <p><strong>午间</strong> → 总部手动「存一版」或依赖整点任务。</p>
+        <p><strong>下午确认入库</strong> → <strong>入库前强制快照</strong> → 确认 → 抽查 changelog。</p>
+        <p><strong>导出交付</strong> → 按类型/筛选导出；audit 记清条件。</p>
+        <p><strong>收工</strong> → Daily 包；任务最后一天打 Final 包并冻结写权限（可选）。</p>
+      </div>
+    </section>
+
+    <section id="security">
+      <h2><span class="num">06</span>安全（够用即可）</h2>
+      <ul>
+        <li><strong>异目录：</strong>检查点写到宿主机 <code>/backup/form-maintenance/{taskId}/</code>，与容器 data 卷分离。</li>
+        <li><strong>权限：</strong>仅总部 / 超管可回退与下载备份；主管只产生留痕，不能删检查点。</li>
+        <li><strong>完整性：</strong>每份快照带 SHA-256；回退前校验。</li>
+        <li><strong>工号：</strong>写操作、确认入库、导出继续绑定六位工号（已有方向保持）。</li>
+        <li><strong>口令：</strong>演示阶段「密码=工号」可接受，但备份目录勿对全员开放目录浏览。</li>
+        <li><strong>不做：</strong>默认双人删除、默认异地多活、默认多年 WORM——除非单轮任务被升级为「正式归档轮」。</li>
+      </ul>
+    </section>
+
+    <section id="phase">
+      <h2><span class="num">07</span>落地阶段（贴合短期平台）</h2>
+      <div class="phase">
+        <div class="phase-item">
+          <h4>Phase 1 · 先挡住最大事故（建议优先）</h4>
+          <p>确认入库 / 整表替换前自动检查点；最近 N 份快照列表 + 一键回退；失败告警。</p>
+        </div>
+        <div class="phase-item">
+          <h4>Phase 2 · 跟上高频节奏</h4>
+          <p>任务标签；进行中每 2–4 小时自动拍；手动「存一版」；Daily 包。</p>
+        </div>
+        <div class="phase-item">
+          <h4>Phase 3 · 收尾可交代</h4>
+          <p>任务 Final 包（库+留痕 JSONL+manifest）；导出 audit 带筛选摘要；到期清理提醒。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="done">
+      <h2><span class="num">08</span>验收标准（短期场景）</h2>
+      <ul>
+        <li>总部误点「整表替换」后，<strong>10 分钟内</strong>能回到替换前检查点。</li>
+        <li>任务进行的任意一天，能回答某个项目类型字段「上午谁改过」。</li>
+        <li>一次导出争议可用 audit 中的筛选条件 + 行数当场核对。</li>
+        <li>任务结束后，Final 包可单独拷贝存档；清理过期检查点不误删 Final。</li>
+        <li>备份目录与业务 volume 分离：删容器卷不会同时带走全部检查点。</li>
+      </ul>
+      <div class="callout">
+        本方案是<strong>场景裁剪版</strong>：服务于短期频繁汇总维护。若个别轮次升级为长期依据，对该任务单独打开「加长保留 / 强化归档」开关即可。
+      </div>
+    </section>
+
+    <footer>
+      表单维护 APP · 短期高频维护场景 · 备份与留痕轻量方案 V1.0<br />
+      文件：<code>doc/短期高频维护平台-备份与留痕方案.html</code><br />
+      对照文档：<code>doc/数据库备份与Changelog存档方案.html</code>（偏长留存合规）
+    </footer>
+  </div>
+</body>
+</html>
