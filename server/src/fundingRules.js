@@ -8,6 +8,17 @@ function displayAmount(value) {
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 }
 
+/** 演示/台账经费拆分：总经费 = 国拨 + 自筹；内部经费仅为其中子集，不参与三方扣减。 */
+export function splitTotalBudget(total, level) {
+  const value = Number(total) || 0;
+  const grantRatio = level === '国家级' ? 0.62 : level === '地方级' ? 0.42 : 0.08;
+  const internalRatio = level === '公司级' ? 0.82 : 0.16;
+  const centralGrant = Math.round(value * grantRatio * 10) / 10;
+  const selfFund = Math.round((value - centralGrant) * 10) / 10;
+  const internalFund = Math.min(Math.round(value * internalRatio * 10) / 10, value);
+  return { centralGrant, selfFund, internalFund };
+}
+
 export function validateFundingRelation(values, tolerance = 0.01) {
   const total = amount(values.totalBudget);
   const grant = amount(values.centralGrant) ?? 0;

@@ -35,7 +35,8 @@ import {
   selectPrimaryImportSheet,
   uniqueArchiveName,
 } from './transitionFiles.js';
-import { validateFundingRelation } from './fundingRules.js';
+import { splitTotalBudget, validateFundingRelation } from './fundingRules.js';
+import { pairResultItems } from './resultItems.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = join(__dirname, '..', 'data', 'uploads');
@@ -88,47 +89,54 @@ const V19_MAJOR_BY_CHANNEL = {
   BOEING: ['70-运行支持', '7001-运行支援'],
 };
 
+/** 台账三级表头：group（顶层）/ subGroup（中层）/ label（叶子）；headerBanner 为顶层竖向合并独立列 */
 const TRANSITION_FIELDS = [
-  { group: '项目基本信息', code: 'serial', label: '序号', required: false, index: 0, width: 8 },
-  { group: '项目基本信息', code: 'level', label: '级别', required: true, index: 1, width: 10 },
-  { group: '项目基本信息', code: 'sourceChannel', label: '项目来源/渠道', required: true, index: 2, width: 16 },
-  { group: '项目基本信息', code: 'projectType', label: '项目类型', required: true, index: 3, width: 16 },
-  { group: '项目基本信息', code: 'major1', label: '一级专业', required: false, index: 4, width: 16 },
-  { group: '项目基本信息', code: 'major2', label: '二级专业', required: false, index: 5, width: 18 },
-  { group: '项目基本信息', code: 'name', label: '项目名称', required: true, index: 6, width: 34 },
-  { group: '项目基本信息', code: 'demandUnit', label: '管理/需求单位', required: false, index: 8, width: 18 },
-  { group: '项目基本信息', code: 'responsibleUnit', label: '责任单位', required: true, index: 9, width: 16 },
-  { group: '项目基本信息', code: 'projectStatus', label: '项目状态', required: true, index: 10, width: 12 },
-  { group: '项目基本信息', code: 'acceptanceStatus', label: '验收状态', required: false, index: 11, width: 12 },
-  { group: '项目基本信息', code: 'owner', label: '负责人', required: false, index: 12, width: 18, aliases: ['中国商飞内部负责人'] },
-  { group: '项目基本信息', code: 'approvalMonth', label: '项目立项年月', required: false, index: 13, width: 14 },
-  { group: '项目基本信息', code: 'startMonth', label: '项目开始年月', required: false, index: 14, width: 14 },
-  { group: '项目基本信息', code: 'endMonth', label: '项目结束年月', required: false, index: 15, width: 14 },
-  { group: '项目基本信息', code: 'duration', label: '项目周期', required: false, index: 16, width: 12 },
-  { group: '经费情况', code: 'totalBudget', label: '总经费（万元）', required: true, index: 17, width: 14, number: true },
-  { group: '经费情况', code: 'centralGrant', label: '国拨经费（万元）', required: false, index: 18, width: 14, number: true },
-  { group: '经费情况', code: 'internalGrant', label: '其中商飞内部单位国拨经费（万元）', required: false, index: 19, width: 22, number: true },
-  { group: '经费情况', code: 'selfFund', label: '自筹经费（万元）', required: false, index: 20, width: 14, number: true },
-  { group: '经费情况', code: 'internalSelfFund', label: '其中商飞内部单位自筹经费（万元）', required: false, index: 21, width: 22, number: true },
-  { group: '经费情况', code: 'spent', label: '累计支出（万元）', required: false, index: 22, width: 14, number: true },
-  { group: '经费情况', code: 'budget2026', label: '2026年预算（万元）', required: false, index: 23, width: 16, number: true },
-  { group: '经费情况', code: 'budget2026Actual', label: '2026年实际执行经费（万元）', required: false, index: 24, width: 18, number: true },
-  { group: '经费情况', code: 'budget2026Rate', label: '2026年预算执行率', required: false, index: 25, width: 16 },
-  { group: '经费情况', code: 'closedActualBudget', label: '已结题项目实际执行经费（万元）', required: false, index: 26, width: 22, number: true },
-  { group: '经费情况', code: 'closedGrantSpent', label: '已结题项目国拨经费执行（万元）', required: false, index: 27, width: 22, number: true },
-  { group: '经费情况', code: 'closedSelfSpent', label: '已结题项目自筹经费执行（万元）', required: false, index: 28, width: 24, number: true, aliases: ['已结题项目国自筹经费执行（万元）'] },
-  { group: '经费情况', code: 'closedExecutionRate', label: '已结题项目经费执行率', required: false, index: 29, width: 16, aliases: ['执行率'] },
-  { group: '成果转化情况', code: 'resultCount', label: '产生成果数量', required: false, index: 30, width: 14, number: true },
-  { group: '成果转化情况', code: 'resultNames', label: '产生成果名称', required: false, index: 31, width: 28 },
-  { group: '成果转化情况', code: 'convertedCount', label: '已转化数量', required: false, index: 32, width: 14, number: true },
-  { group: '成果转化情况', code: 'convertedNames', label: '转化成果名称', required: false, index: 33, width: 28 },
-  { group: '成果转化情况', code: 'convertedMonth', label: '转化年月', required: false, index: 34, width: 14 },
-  { group: '成果转化情况', code: 'convertedModel', label: '转化型号', required: false, index: 35, width: 18 },
-  { group: '成果转化情况', code: 'reserveCount', label: '技术储备数量', required: false, index: 36, width: 14, number: true },
-  { group: '成果转化情况', code: 'reserveNames', label: '储备成果名称', required: false, index: 37, width: 28 },
-  { group: '成果转化情况', code: 'reserveYear', label: '预计转化年度', required: false, index: 38, width: 14 },
-  { group: '备注', code: 'remarks', label: '备注', required: false, index: 39, width: 18 },
-].map((field, index) => ({ ...field, index }));
+  { group: '项目基本信息', subGroup: null, code: 'serial', label: '序号', required: false, width: 8 },
+  { group: '项目基本信息', subGroup: null, code: 'level', label: '级别', required: true, width: 10 },
+  { group: '项目基本信息', subGroup: null, code: 'sourceChannel', label: '项目来源/渠道', required: true, width: 16 },
+  { group: '项目基本信息', subGroup: null, code: 'projectType', label: '项目类型', required: true, width: 16 },
+  { group: '项目基本信息', subGroup: null, code: 'major1', label: '一级专业', required: false, width: 16 },
+  { group: '项目基本信息', subGroup: null, code: 'major2', label: '二级专业', required: false, width: 18 },
+  { group: '项目基本信息', subGroup: null, code: 'name', label: '项目名称', required: true, width: 34 },
+  { group: '项目基本信息', subGroup: null, code: 'demandUnit', label: '管理/需求单位', required: false, width: 18 },
+  { group: '项目基本信息', subGroup: null, code: 'responsibleUnit', label: '责任单位', required: true, width: 16 },
+  { group: '项目基本信息', subGroup: null, code: 'projectStatus', label: '项目状态', required: true, width: 12 },
+  { group: '项目基本信息', subGroup: null, code: 'acceptanceStatus', label: '验收状态', required: false, width: 12 },
+  { group: '项目基本信息', subGroup: null, code: 'owner', label: '负责人', required: false, width: 18, aliases: ['中国商飞内部负责人'] },
+  { group: '项目基本信息', subGroup: null, code: 'approvalMonth', label: '项目立项年月', required: false, width: 14 },
+  { group: '项目基本信息', subGroup: null, code: 'startMonth', label: '项目开始年月', required: false, width: 14 },
+  { group: '项目基本信息', subGroup: null, code: 'endMonth', label: '项目结束年月', required: false, width: 14 },
+  { group: '项目基本信息', subGroup: null, code: 'duration', label: '项目周期', required: false, width: 12 },
+  // 总经费属于「经费情况」：顶层并入该组 colspan；中层无子组，竖向合并至叶子行
+  { group: '经费情况', subGroup: null, code: 'totalBudget', label: '总经费（万元）', required: true, width: 14, number: true },
+  { group: '经费情况', subGroup: '国拨经费', code: 'centralGrant', label: '国拨经费（万元）', required: false, width: 14, number: true },
+  { group: '经费情况', subGroup: '国拨经费', code: 'internalGrant', label: '其中商飞内部单位国拨经费（万元）', required: false, width: 22, number: true },
+  { group: '经费情况', subGroup: '自筹经费', code: 'selfFund', label: '自筹经费（万元）', required: false, width: 14, number: true },
+  { group: '经费情况', subGroup: '自筹经费', code: 'internalSelfFund', label: '其中商飞内部单位自筹经费（万元）', required: false, width: 22, number: true },
+  { group: '经费情况', subGroup: '预算情况', code: 'spent', label: '累计支出（万元）', required: false, width: 14, number: true },
+  { group: '经费情况', subGroup: '预算情况', code: 'budget2026', label: '2026年预算（万元）', required: false, width: 16, number: true },
+  // 旧模板兼容：仍可导入，但不进入界面/导出三级表头（图示预算情况仅 2 列）
+  { group: '经费情况', subGroup: '预算情况', code: 'budget2026Actual', label: '2026年实际执行经费（万元）', required: false, width: 18, number: true, ledger: false },
+  { group: '经费情况', subGroup: '预算情况', code: 'budget2026Rate', label: '2026年预算执行率', required: false, width: 16, ledger: false },
+  { group: '经费情况', subGroup: '已结题项目执行情况', code: 'closedActualBudget', label: '已结题项目实际执行经费（万元）', required: false, width: 22, number: true },
+  { group: '经费情况', subGroup: '已结题项目执行情况', code: 'closedGrantSpent', label: '已结题项目国拨经费执行（万元）', required: false, width: 22, number: true },
+  { group: '经费情况', subGroup: '已结题项目执行情况', code: 'closedSelfSpent', label: '已结题项目国自筹经费执行（万元）', required: false, width: 24, number: true, aliases: ['已结题项目自筹经费执行（万元）'] },
+  { group: '经费情况', subGroup: '已结题项目执行情况', code: 'closedExecutionRate', label: '已结题项目经费执行率', required: false, width: 16, aliases: ['执行率'] },
+  { group: '成果转化情况', subGroup: null, code: 'resultCount', label: '产生成果数量', required: false, width: 14, number: true },
+  { group: '成果转化情况', subGroup: null, code: 'resultNames', label: '产生成果名称', required: false, width: 28 },
+  { group: '成果转化情况', subGroup: '已转化成果', code: 'convertedCount', label: '已转化数量', required: false, width: 14, number: true },
+  { group: '成果转化情况', subGroup: '已转化成果', code: 'convertedNames', label: '转化成果名称', required: false, width: 28 },
+  { group: '成果转化情况', subGroup: '已转化成果', code: 'convertedMonth', label: '转化年月', required: false, width: 14 },
+  { group: '成果转化情况', subGroup: '已转化成果', code: 'convertedModel', label: '转化型号', required: false, width: 18 },
+  { group: '成果转化情况', subGroup: '技术储备成果', code: 'reserveCount', label: '技术储备数量', required: false, width: 14, number: true },
+  { group: '成果转化情况', subGroup: '技术储备成果', code: 'reserveNames', label: '储备成果名称', required: false, width: 28 },
+  { group: '成果转化情况', subGroup: '技术储备成果', code: 'reserveYear', label: '预计转化年度', required: false, width: 14 },
+  { group: '备注', subGroup: null, code: 'remarks', label: '备注', required: false, width: 18 },
+].map((field, index) => ({ ...field, index, ledger: field.ledger !== false, headerBanner: Boolean(field.headerBanner) }));
+
+function ledgerTransitionFields() {
+  return TRANSITION_FIELDS.filter((f) => f.ledger).map((field, index) => ({ ...field, index }));
+}
 
 function audit(userName, action, target, detail) {
   db.prepare('INSERT INTO audit (ts,user_name,action,target,detail) VALUES (?,?,?,?,?)')
@@ -171,12 +179,31 @@ function monthDiff(start, end) {
 }
 
 function fundSplit(total, level) {
-  const grantRatio = level === '国家级' ? 0.62 : level === '地方级' ? 0.42 : 0.08;
-  const internalRatio = level === '公司级' ? 0.82 : 0.16;
-  const centralGrant = Math.round(total * grantRatio * 10) / 10;
-  const internalFund = Math.round(total * internalRatio * 10) / 10;
-  const selfFund = Math.max(0, Math.round((total - centralGrant - internalFund) * 10) / 10);
-  return { centralGrant, selfFund, internalFund };
+  return splitTotalBudget(total, level);
+}
+
+/** 修正历史样本中「总经费 ≠ 国拨+自筹」的错误（旧 fundSplit 误把内部经费从自筹中扣减）。 */
+function repairSampleFundingRow(row) {
+  const id = cellText(row?.id);
+  const source = cellText(row?.sourceFile);
+  const isSample = id.startsWith('TR-SAMPLE-') || source.includes('样本案例');
+  if (!isSample) return row;
+  const check = validateFundingRelation({
+    totalBudget: row.totalBudget,
+    centralGrant: row.centralGrant,
+    selfFund: row.selfFund,
+    internalGrant: row.internalGrant,
+    internalSelfFund: row.internalSelfFund,
+  });
+  if (check.ok || check.total == null) return row;
+  const grant = check.grant ?? 0;
+  const selfFund = Math.round((check.total - grant) * 10) / 10;
+  const internalSelf = cellNumber(row.internalSelfFund) || 0;
+  return {
+    ...row,
+    selfFund,
+    internalSelfFund: Math.min(internalSelf, selfFund),
+  };
 }
 
 function v19LedgerFields(p, funds, delivered, delivTotal) {
@@ -1218,13 +1245,13 @@ function defaultTransitionRows() {
     const updater = updaters[i % updaters.length];
     const partner = partners[i % partners.length];
     const resultNames = c.result > 0
-      ? Array.from({ length: c.result }, (_, k) => `${resultPool[(i + k) % resultPool.length]}（${c.name.slice(0, 8)}）`).join('；')
+      ? Array.from({ length: c.result }, (_, k) => `${resultPool[(i + k) % resultPool.length]}（${c.name.slice(0, 8)}）`).join('\n')
       : '';
     const convertedNames = c.converted > 0
-      ? Array.from({ length: c.converted }, (_, k) => `${models[(i + k) % models.length]}应用包-${k + 1}`).join('；')
+      ? Array.from({ length: c.converted }, (_, k) => `${models[(i + k) % models.length]}应用包-${k + 1}`).join('\n')
       : '';
     const reserveNames = c.reserve > 0
-      ? Array.from({ length: c.reserve }, (_, k) => `技术储备-${resultPool[(i + k + 3) % resultPool.length]}`).join('；')
+      ? Array.from({ length: c.reserve }, (_, k) => `技术储备-${resultPool[(i + k + 3) % resultPool.length]}`).join('\n')
       : '';
     return normalizeTransitionRow({
       id: `TR-SAMPLE-${String(i + 1).padStart(3, '0')}`,
@@ -1265,8 +1292,12 @@ function defaultTransitionRows() {
       resultNames,
       convertedCount: c.converted,
       convertedNames,
-      convertedMonth: c.converted > 0 ? `${endY - 1}.${(i % 9) + 1}` : '',
-      convertedModel: c.converted > 0 ? models[i % models.length] : '',
+      convertedMonth: c.converted > 0
+        ? Array.from({ length: c.converted }, (_, k) => `${endY - 1}.${((i + k) % 9) + 1}`).join('\n')
+        : '',
+      convertedModel: c.converted > 0
+        ? Array.from({ length: c.converted }, (_, k) => models[(i + k) % models.length]).join('\n')
+        : '',
       reserveCount: c.reserve,
       reserveNames,
       reserveYear: c.reserve > 0 ? String(endY + 1) : '',
@@ -1886,12 +1917,27 @@ function upsertTransitionRecord(input, batchId = null) {
 
 function getTransitionRows() {
   const stored = db.prepare('SELECT row_json FROM transition_records ORDER BY rowid').all();
-  if (stored.length) return stored.map((x) => normalizeTransitionRow(J(x.row_json, {})));
+  if (stored.length) {
+    const rows = stored.map((x) => normalizeTransitionRow(J(x.row_json, {})));
+    let changed = 0;
+    const repaired = rows.map((row) => {
+      const next = repairSampleFundingRow(row);
+      if (next !== row) changed += 1;
+      return normalizeTransitionRow(next);
+    });
+    if (changed) {
+      setTransitionRows(repaired);
+      audit('系统', '样本修正', '预先研究项目总表', `已自动修正 ${changed} 条历史样本经费（总经费=国拨+自筹）`);
+      return repaired;
+    }
+    return rows;
+  }
   const raw = db.prepare('SELECT value FROM kv WHERE key=?').get(transitionKey)?.value;
   const legacy = raw ? J(raw, []).map((x) => normalizeTransitionRow(x)) : [];
   if (legacy.length) {
-    setTransitionRows(legacy);
-    return legacy;
+    const repaired = legacy.map((row) => normalizeTransitionRow(repairSampleFundingRow(row)));
+    setTransitionRows(repaired);
+    return repaired;
   }
 
   // 首次打开即提供完整演示台账，避免空库只显示“0 行”。样本覆盖三级层级、
@@ -1929,6 +1975,7 @@ function transitionSubtables(rows) {
 
 function transitionTemplateRules() {
   const dictionaries = transitionTemplateDictionaries();
+  const ledgerFields = ledgerTransitionFields();
   return {
     templateFile: '预先研究项目信息-表头 (1).xlsx',
     sampleFile: '预先研究项目信息（样例） (1).xlsx',
@@ -1936,8 +1983,8 @@ function transitionTemplateRules() {
     headerRows: [1, 2, 3],
     headerRow: 3,
     dataStartRow: 5,
-    totalColumns: 'A:AM',
-    totalColumnCount: TRANSITION_FIELDS.length,
+    totalColumns: `A:${colName(ledgerFields.length - 1)}`,
+    totalColumnCount: ledgerFields.length,
     splitField: '项目类型',
     splitFieldColumn: 'D',
     splitFieldSource: 'sheet4!$A:$A',
@@ -1947,7 +1994,7 @@ function transitionTemplateRules() {
     projectTypeCount: dictionaries.projectTypes.length,
     sourceChannelCount: dictionaries.sourceChannels.length,
     validationRules: [
-      '导入总表和专项分表均使用同一套A:AM表头和列顺序（已删除“所中心”列）',
+      '导入总表和专项分表均使用同一套三级表头和列顺序（经费/成果中组与图示一致）',
       '系统严格按D列“项目类型”拆分专项分表，项目类型来自Sheet4第一列',
       '上传文件先生成预校验批次，上传人确认后才写入总表记录',
       '批量上传分表时按项目唯一性规则判断新增、更新、跳过和冲突',
@@ -2273,37 +2320,56 @@ function recentTransitionBatches(user = null, access = null) {
     .map((x) => mapTransitionBatch(x));
 }
 
-function confirmTransitionBatch(batchId, userName) {
+function confirmTransitionBatch(batchId, userName, { forceDespiteIssues = false } = {}) {
   const batch = db.prepare('SELECT * FROM transition_import_batches WHERE id=?').get(batchId);
   if (!batch) throw new Error('导入批次不存在');
-  if (batch.status !== '待确认') throw new Error('该导入批次已处理或仍需修正，不能重复确认');
-  if (batch.invalid_count > 0) throw new Error('该批次仍存在校验问题，请修正 Excel 后重新上传');
-  const rows = db.prepare("SELECT * FROM transition_import_rows WHERE batch_id=? AND action IN ('add','update','keep') ORDER BY id").all(batch.id);
-  const invalidRows = rows.flatMap((item) => {
-    const validation = validateTransitionRow(J(item.row_json, {}));
-    return validation.ok ? [] : [{ name: item.project_name || `第 ${item.row_no || '?'} 行`, issues: validation.missing.concat(validation.warnings) }];
-  });
-  if (invalidRows.length) {
-    throw new Error(`确认入库前复核未通过：${invalidRows[0].name}；${invalidRows[0].issues.join('；')}`);
+  if (!['待确认', '待修正'].includes(batch.status)) {
+    throw new Error('该导入批次已处理或已取消，不能重复确认');
   }
+  if (batch.invalid_count > 0 && !forceDespiteIssues) {
+    throw new Error('该批次存在校验问题。如确认仍要入库，请勾选「已知晓问题仍确认入库」');
+  }
+
+  const rawRows = db.prepare('SELECT * FROM transition_import_rows WHERE batch_id=? ORDER BY id').all(batch.id);
+  const rows = [];
+  for (const item of rawRows) {
+    if (item.action === 'delete') continue;
+    if (['add', 'update', 'keep'].includes(item.action)) {
+      rows.push(item);
+      continue;
+    }
+    if (item.action === 'skip' && forceDespiteIssues && item.identity_key) {
+      const issue = String(item.issue || '');
+      if (issue.includes('缺少项目名称') || issue.includes('项目唯一性冲突')) continue;
+      rows.push(item);
+    }
+  }
+
   db.transaction(() => {
-    const claim = db.prepare("UPDATE transition_import_batches SET status='处理中' WHERE id=? AND status='待确认' AND invalid_count=0").run(batch.id);
+    const claim = db.prepare("UPDATE transition_import_batches SET status='处理中' WHERE id=? AND status IN ('待确认','待修正')").run(batch.id);
     if (claim.changes !== 1) throw new Error('该批次正在由其他操作处理，请刷新后查看结果');
     if (batch.mode === 'replace') db.prepare('DELETE FROM transition_records').run();
     for (const r0 of rows) {
       if (batch.mode !== 'replace' && r0.action === 'keep') continue;
       const row = normalizeTransitionRow({ ...J(r0.row_json, {}), updatedBy: userName, updatedAt: TODAY() });
-      const beforeRaw = db.prepare('SELECT row_json FROM transition_records WHERE identity_key=?').get(r0.identity_key || transitionIdentity(row));
+      const identity = r0.identity_key || transitionIdentity(row);
+      if (!identity) continue;
+      const beforeRaw = batch.mode === 'replace'
+        ? null
+        : db.prepare('SELECT row_json FROM transition_records WHERE identity_key=?').get(identity);
       const before = beforeRaw ? J(beforeRaw.row_json, null) : null;
+      const action = before ? 'update' : 'add';
       upsertTransitionRecord(row, batch.id);
-      insertTransitionChangeLog({
-        batchId: batch.id,
-        row,
-        action: r0.action === 'update' ? 'update' : 'add',
-        userName,
-        sourceFile: batch.file_name,
-        before,
-      });
+      if (r0.action !== 'keep') {
+        insertTransitionChangeLog({
+          batchId: batch.id,
+          row,
+          action: r0.action === 'update' || (r0.action === 'skip' && before) ? 'update' : action,
+          userName,
+          sourceFile: batch.file_name,
+          before,
+        });
+      }
     }
     db.prepare("UPDATE transition_import_batches SET status='已入库', confirmed_by=?, confirmed_at=? WHERE id=?")
       .run(userName, TODAY(), batch.id);
@@ -2802,26 +2868,64 @@ function exportTransitionValue(row, field) {
   return cellRawText(value);
 }
 
-function makeTransitionSheet(rows, title) {
-  const groupRow = TRANSITION_FIELDS.map((f, i) => (i === 0 || TRANSITION_FIELDS[i - 1].group !== f.group ? f.group : ''));
-  const headerRow = TRANSITION_FIELDS.map((f) => f.label);
-  const subHeaderRow = TRANSITION_FIELDS.map(() => '');
-  const body = rows.map((row) => TRANSITION_FIELDS.map((f) => exportTransitionValue(row, f)));
-  const ws = XLSX.utils.aoa_to_sheet([[title], groupRow, headerRow, subHeaderRow, ...body]);
-  ws['!cols'] = TRANSITION_FIELDS.map((f) => ({ wch: f.width || 14 }));
-  const groupMerges = [];
-  let groupStart = 0;
-  for (let i = 1; i <= TRANSITION_FIELDS.length; i += 1) {
-    if (i === TRANSITION_FIELDS.length || TRANSITION_FIELDS[i].group !== TRANSITION_FIELDS[groupStart].group) {
-      if (i - groupStart > 1) groupMerges.push({ s: { r: 1, c: groupStart }, e: { r: 1, c: i - 1 } });
-      groupStart = i;
+/** 按图示生成三级表头：顶层分组 / 中组 / 叶子；总经费为顶层竖向合并独立列 */
+function buildTransitionHeaderMatrix(fields) {
+  const top = Array(fields.length).fill('');
+  const mid = Array(fields.length).fill('');
+  const leaf = Array(fields.length).fill('');
+  const merges = [];
+
+  let i = 0;
+  while (i < fields.length) {
+    const field = fields[i];
+    if (field.headerBanner) {
+      top[i] = field.label;
+      merges.push({ s: { r: 1, c: i }, e: { r: 3, c: i } });
+      i += 1;
+      continue;
     }
+    let j = i + 1;
+    while (j < fields.length && fields[j].group === field.group && !fields[j].headerBanner) j += 1;
+    top[i] = field.group;
+    if (j - i > 1) merges.push({ s: { r: 1, c: i }, e: { r: 1, c: j - 1 } });
+    i = j;
   }
+
+  i = 0;
+  while (i < fields.length) {
+    const field = fields[i];
+    if (field.headerBanner) {
+      i += 1;
+      continue;
+    }
+    if (!field.subGroup) {
+      mid[i] = field.label;
+      merges.push({ s: { r: 2, c: i }, e: { r: 3, c: i } });
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < fields.length && fields[j].subGroup === field.subGroup && !fields[j].headerBanner) j += 1;
+    mid[i] = field.subGroup;
+    if (j - i > 1) merges.push({ s: { r: 2, c: i }, e: { r: 2, c: j - 1 } });
+    for (let k = i; k < j; k += 1) leaf[k] = fields[k].label;
+    i = j;
+  }
+
+  return { top, mid, leaf, merges };
+}
+
+function makeTransitionSheet(rows, title) {
+  const fields = ledgerTransitionFields();
+  const { top, mid, leaf, merges } = buildTransitionHeaderMatrix(fields);
+  const body = rows.map((row) => fields.map((f) => exportTransitionValue(row, f)));
+  const ws = XLSX.utils.aoa_to_sheet([[title], top, mid, leaf, ...body]);
+  ws['!cols'] = fields.map((f) => ({ wch: f.width || 14 }));
   ws['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: TRANSITION_FIELDS.length - 1 } },
-    ...groupMerges,
+    { s: { r: 0, c: 0 }, e: { r: 0, c: Math.max(0, fields.length - 1) } },
+    ...merges,
   ];
-  ws['!autofilter'] = { ref: `A3:${colName(TRANSITION_FIELDS.length - 1)}${Math.max(4, rows.length + 4)}` };
+  ws['!autofilter'] = { ref: `A4:${colName(fields.length - 1)}${Math.max(5, rows.length + 4)}` };
   return ws;
 }
 
@@ -2853,6 +2957,7 @@ r.get('/transition-tool', (req, res) => {
     const validation = validateTransitionRow(x);
     return {
       ...x,
+      resultItems: pairResultItems(x),
       validation,
       canWriteRow: canWriteTransitionRow(access, user, x),
     };
@@ -3035,10 +3140,14 @@ r.post('/transition-tool/import-batches/:id/confirm', async (req, res) => {
   const operatorNo = requireOperatorNo(req, res, user);
   if (!operatorNo) return;
   const actor = formatOperatorActor(user.name, operatorNo);
+  const forceDespiteIssues = Boolean(req.body?.forceDespiteIssues);
   try {
     if (access.mode === 'owner' || access.mode === 'channel' || access.mode === 'unit') {
-      const rows = db.prepare('SELECT row_json, project_type FROM transition_import_rows WHERE batch_id=? AND action IN (\'add\',\'update\')').all(req.params.id);
-      const denied = rows.find((x) => !canWriteTransitionRow(access, user, J(x.row_json, { projectType: x.project_type })));
+      const rows = db.prepare("SELECT row_json, project_type, action FROM transition_import_rows WHERE batch_id=? AND action IN ('add','update','skip')").all(req.params.id);
+      const denied = rows.find((x) => {
+        if (x.action === 'skip' && !forceDespiteIssues) return false;
+        return !canWriteTransitionRow(access, user, J(x.row_json, { projectType: x.project_type }));
+      });
       if (denied) {
         const sample = J(denied.row_json, { projectType: denied.project_type });
         const tip = access.mode === 'channel'
@@ -3055,8 +3164,8 @@ r.post('/transition-tool/import-batches/:id/confirm', async (req, res) => {
     if (backup?.error) {
       return res.status(500).json({ error: `确认入库前备份失败，已中止入库：${backup.error}` });
     }
-    const batch = confirmTransitionBatch(Number(req.params.id), actor);
-    audit(actor, '表单维护', '确认入库', `工号 ${operatorNo} · ${batch.file_name}：新增 ${batch.added_count} 行，更新 ${batch.updated_count} 行；备份 ${backup.file}`);
+    const batch = confirmTransitionBatch(Number(req.params.id), actor, { forceDespiteIssues });
+    audit(actor, '表单维护', '确认入库', `工号 ${operatorNo} · ${batch.file_name}：新增 ${batch.added_count} 行，更新 ${batch.updated_count} 行${forceDespiteIssues ? '（含人工确认问题行）' : ''}；备份 ${backup.file}`);
     res.json({ ok: true, batch, backup });
   } catch (err) {
     res.status(400).json({ error: String(err.message || err) });

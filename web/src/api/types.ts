@@ -131,7 +131,19 @@ export interface DuplicateMatch {
   status: string; owner: string; similarity: number; hitFields: string[]; suggestion: string
 }
 
-export interface TransitionField { group: string; code: string; label: string; required: boolean; index?: number; width?: number; number?: boolean }
+export interface TransitionField {
+  group: string
+  subGroup?: string | null
+  code: string
+  label: string
+  required: boolean
+  index?: number
+  width?: number
+  number?: boolean
+  ledger?: boolean
+  headerBanner?: boolean
+  aliases?: string[]
+}
 export interface TransitionRow {
   id: string; sourceType: string; sourceSheet: string; sourceFile?: string; sourceRow?: number
   code: string; serial?: string; name: string; level: string; channel: string; sourceChannel?: string; projectType?: string
@@ -144,6 +156,13 @@ export interface TransitionRow {
   closedActualBudget?: number | null; closedGrantSpent?: number | null; closedSelfSpent?: number | null; closedExecutionRate?: string; executionRate?: string
   resultCount?: number | null; resultNames?: string; convertedCount?: number | null; convertedNames?: string; convertedMonth?: string; convertedModel?: string
   reserveCount?: number | null; reserveNames?: string; reserveYear?: string; remarks?: string
+  /** 成果明细（由多行单元格解析，不拆项目行；经费仍按本行统计） */
+  resultItems?: {
+    resultName: string
+    convertedName: string
+    convertedMonth: string
+    convertedModel: string
+  }[]
   color?: 'red' | 'yellow' | 'blue' | 'green'
   transformSummary: string; updatedBy: string; updatedAt: string
   /** 操作人工号（不进 Excel，留痕用） */

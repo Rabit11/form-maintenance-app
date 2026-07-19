@@ -135,6 +135,31 @@ body {
   text-align: left;
   vertical-align: bottom;
 }
+.excel-ledger-table--tier3 thead tr:nth-child(2) th {
+  top: 34px;
+  height: 36px;
+  padding: 6px 8px;
+  text-align: center;
+  vertical-align: middle;
+}
+.excel-ledger-table--tier3 thead tr:nth-child(3) th {
+  top: 70px;
+  height: 48px;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: bottom;
+}
+.excel-ledger-table .excel-subgroup {
+  color: var(--color-dim);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.excel-ledger-table .excel-banner {
+  color: var(--color-accent);
+  text-align: center;
+  vertical-align: middle;
+  letter-spacing: 0.04em;
+}
 .excel-ledger-table tbody td {
   height: 38px;
   padding: 7px 10px;
@@ -146,6 +171,10 @@ body {
 .excel-ledger-table tbody tr { cursor: pointer; }
 .excel-ledger-table tbody tr:hover td { background: rgba(56, 189, 248, 0.08); }
 .excel-ledger-table tbody tr.row-warning td { background: rgba(251, 191, 36, 0.045); }
+.excel-ledger-table tbody td.excel-result-cell {
+  color: var(--color-dim);
+  font-size: 11px;
+}
 .excel-ledger-table .excel-group { color: var(--color-accent); }
 .excel-ledger-table .excel-col {
   display: block;
