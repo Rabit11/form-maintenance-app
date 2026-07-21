@@ -1,13 +1,13 @@
 import { useNavigate } from 'react-router-dom'
 import { useState, type FormEvent } from 'react'
-import { ChevronRight, FileSpreadsheet, KeyRound, ShieldCheck, Users } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileSpreadsheet, KeyRound, ShieldCheck, Users } from 'lucide-react'
 import { useSession, ROLE_LABEL } from '../store/session'
 import type { User } from '../store/session'
 import { api } from '../api/client'
 import { Tag } from '../components/ui'
 
-/** 登录页快速入口：含系统超级管理员 */
-type FormBucket = 'admin' | 'leader' | 'hq' | 'channel' | 'unit'
+/** 登录页快速入口：含系统超级管理员（默认收起，入口保留） */
+type FormBucket = 'admin' | 'leader' | 'hq' | 'channel'
 
 const QUICK_LOGIN_IDS = new Set([
   'u_super',
@@ -19,8 +19,6 @@ const QUICK_LOGIN_IDS = new Set([
   'u_ch_ndrc',
   'u_ch_shkc',
   'u_ch_zgsf',
-  'u_unit_mgr',
-  'u_unit_pm',
 ])
 
 function formBucket(u: User): FormBucket | null {
@@ -28,7 +26,6 @@ function formBucket(u: User): FormBucket | null {
   if (u.id === 'u_leader' || u.role === 'leader') return 'leader'
   if (u.role === 'mgmt' && u.scope === 'hq') return 'hq'
   if (u.scope === 'channel') return 'channel'
-  if (u.role === 'mgmt' && u.scope === 'unit') return 'unit'
   return null
 }
 
@@ -37,7 +34,6 @@ const BUCKET_META: Record<FormBucket, { title: string; desc: string; tone: 'acce
   leader: { title: '总部领导只读', desc: '全部台账可见；不可修改', tone: 'dim' },
   hq: { title: '总部总维护读写全部', desc: '上传总表、拆分分表、确认入库、全量导出', tone: 'accent' },
   channel: { title: '总部层级渠道专员', desc: '全部层级渠道可读；仅本人负责层级下的渠道可修改', tone: 'yellow' },
-  unit: { title: '二级单位项目管理团队负责人', desc: '仅本单位项目可读可写、可导出本单位 Excel', tone: 'green' },
 }
 
 const V19_MATRIX: { role: string; demo: string; visible: string; writable: string }[] = [
@@ -45,7 +41,6 @@ const V19_MATRIX: { role: string; demo: string; visible: string; writable: strin
   { role: '总部领导只读', demo: '周明远', visible: '全部 132 行', writable: '0 行' },
   { role: '总部总维护读写全部', demo: '王建国 / 何雨桐', visible: '全部 132 行', writable: '全部 132 行' },
   { role: '总部层级渠道专员', demo: '梁承泽（国家级）等', visible: '全部 132 行', writable: '仅本层级渠道（如国家级）' },
-  { role: '二级单位项目管理团队负责人', demo: '方致远 / 田念慈', visible: '本单位', writable: '本单位' },
 ]
 
 export default function FormLogin() {
@@ -55,12 +50,13 @@ export default function FormLogin() {
   const [password, setPassword] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
   const [loginErr, setLoginErr] = useState('')
+  const [demoOpen, setDemoOpen] = useState(false)
 
   if (!boot) {
     return <div className="min-h-screen flex items-center justify-center text-faint text-sm blueprint-bg">正在加载账号…</div>
   }
 
-  const groups: Record<FormBucket, User[]> = { admin: [], leader: [], hq: [], channel: [], unit: [] }
+  const groups: Record<FormBucket, User[]> = { admin: [], leader: [], hq: [], channel: [] }
   for (const u of boot.users) {
     if (!QUICK_LOGIN_IDS.has(u.id)) continue
     const bucket = formBucket(u)
@@ -72,7 +68,10 @@ export default function FormLogin() {
     setLoginErr('')
     setLoginBusy(true)
     try {
-      const { user } = await api.post<{ user: User }>('/auth/employee-login', { empNo: empNo.trim(), password })
+      const { user } = await api.post<{ user: User; mustChangePassword?: boolean }>(
+        '/auth/employee-login',
+        { empNo: empNo.trim(), password },
+      )
       login(user)
       nav('/')
     } catch (err) {
@@ -84,84 +83,28 @@ export default function FormLogin() {
 
   return (
     <div className="min-h-screen blueprint-bg text-ink">
-      <div className="max-w-[980px] mx-auto px-5 py-10">
-        <header className="mb-8">
+      <div className="max-w-[520px] mx-auto px-5 py-12">
+        <header className="mb-8 text-center sm:text-left">
           <div className="inline-flex items-center gap-2 text-[11px] tracking-[0.28em] text-accent mb-3">
             <FileSpreadsheet size={14} />
             表单维护 APP
           </div>
-          <h1 className="text-[28px] font-bold leading-tight mb-2">按角色登录 · 维护对象与权限对齐</h1>
-          <p className="text-[13px] text-dim max-w-[720px] leading-relaxed">
-            下方提供系统超级管理员及四类演示角色快速进入；项目类型主管、团队/总师/财务等其余人员请用工号密码登录。
+          <h1 className="text-[26px] font-bold leading-tight mb-2">账户密码登录</h1>
+          <p className="text-[13px] text-dim leading-relaxed">
+            使用六位工号与密码登录。初始密码与工号相同，首次登录须修改密码。
           </p>
         </header>
 
-        <div className="text-[13px] font-semibold mb-3 text-dim">角色快速进入</div>
-        {(['admin', 'leader', 'hq', 'channel', 'unit'] as FormBucket[]).map((bucket) => {
-          const meta = BUCKET_META[bucket]
-          const users = groups[bucket]
-          if (!users.length) return null
-          return (
-            <section key={bucket} className="mb-6">
-              <div className="flex items-center gap-2 mb-2.5 flex-wrap">
-                {bucket === 'admin'
-                  ? <ShieldCheck size={15} className="text-accent" />
-                  : bucket === 'unit' || bucket === 'channel'
-                    ? <Users size={15} className="text-accent" />
-                    : <ShieldCheck size={15} className="text-accent" />}
-                <div className="text-[14px] font-semibold">{meta.title}</div>
-                <Tag tone={meta.tone}>{users.length} 个账号</Tag>
-                <span className="text-[11.5px] text-faint">{meta.desc}</span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                {users.map((u) => {
-                  const off = u.status !== '在岗'
-                  return (
-                    <button
-                      key={u.id}
-                      disabled={off}
-                      onClick={() => {
-                        if (off) return
-                        login(u)
-                        nav('/')
-                      }}
-                      className={`card flex items-center gap-3 px-4 py-3 text-left transition-all ${
-                        off ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:border-[rgba(56,189,248,0.45)]'
-                      }`}
-                    >
-                      <div className="grow min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold">{u.name}</span>
-                          <Tag tone={u.role === 'admin' ? 'accent' : 'dim'}>{ROLE_LABEL[u.role]}</Tag>
-                          {u.role === 'admin' && <Tag tone="accent">人员权限</Tag>}
-                          {u.scope === 'channel' && <Tag tone="yellow">层级渠道专员</Tag>}
-                          {u.scope === 'unit' && <Tag tone="green">本单位可写</Tag>}
-                          {u.scope === 'hq' && u.role === 'mgmt' && <Tag tone="accent">总维护</Tag>}
-                          {u.role === 'leader' && <Tag tone="dim">领导只读</Tag>}
-                          {off && <Tag tone="yellow">已离岗</Tag>}
-                        </div>
-                        <div className="text-[11.5px] text-faint mt-0.5 truncate">{u.title}</div>
-                      </div>
-                      <ChevronRight size={16} className="text-faint shrink-0" />
-                    </button>
-                  )
-                })}
-              </div>
-            </section>
-          )
-        })}
-
-        <section className="card mb-8 overflow-hidden mt-2">
+        <section className="card mb-5 overflow-hidden">
           <div className="px-4 py-3 border-b border-line flex items-center gap-2 flex-wrap">
             <KeyRound size={15} className="text-accent" />
-            <div className="text-[13px] font-semibold">工号密码登录</div>
-            <span className="text-[11px] text-faint">系统超级管理员 / 项目类型主管 / 团队·总师·财务等 · 初始密码与工号相同</span>
+            <div className="text-[13px] font-semibold">登录</div>
           </div>
-          <form onSubmit={submitEmpLogin} className="px-4 py-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:flex-wrap">
-            <label className="flex flex-col gap-1 min-w-[140px]">
-              <span className="text-[11px] text-faint">六位工号</span>
+          <form onSubmit={submitEmpLogin} className="px-4 py-4 flex flex-col gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-faint">账户（六位工号）</span>
               <input
-                className="rounded-md border border-line2 bg-panel2 px-3 py-2 text-[13px] num outline-none focus:border-accent"
+                className="rounded-md border border-line2 bg-panel2 px-3 py-2.5 text-[13px] num outline-none focus:border-accent"
                 inputMode="numeric"
                 maxLength={6}
                 autoComplete="username"
@@ -170,13 +113,13 @@ export default function FormLogin() {
                 onChange={(e) => setEmpNo(e.target.value.replace(/\D/g, '').slice(0, 6))}
               />
             </label>
-            <label className="flex flex-col gap-1 min-w-[140px]">
+            <label className="flex flex-col gap-1">
               <span className="text-[11px] text-faint">密码</span>
               <input
                 type="password"
-                className="rounded-md border border-line2 bg-panel2 px-3 py-2 text-[13px] num outline-none focus:border-accent"
+                className="rounded-md border border-line2 bg-panel2 px-3 py-2.5 text-[13px] num outline-none focus:border-accent"
                 autoComplete="current-password"
-                placeholder="与工号一致"
+                placeholder="初始密码与工号相同"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
@@ -184,47 +127,117 @@ export default function FormLogin() {
             <button
               type="submit"
               disabled={loginBusy || empNo.length !== 6 || !password}
-              className="rounded-md bg-accent/90 hover:bg-accent text-night font-semibold text-[13px] px-4 py-2 disabled:opacity-45 disabled:cursor-not-allowed"
+              className="rounded-md bg-accent/90 hover:bg-accent text-night font-semibold text-[13px] px-4 py-2.5 disabled:opacity-45 disabled:cursor-not-allowed"
             >
               {loginBusy ? '登录中…' : '登录'}
             </button>
-            <p className="text-[11.5px] text-faint sm:ml-2 sm:pb-2">
-              系统超级管理员：工号 <span className="num text-dim">100001</span>，密码同工号。
+            <p className="text-[11.5px] text-faint">
+              系统超级管理员：工号 <span className="num text-dim">100001</span>，初始密码同工号。
             </p>
-            {loginErr && <p className="text-[12px] text-sred w-full">{loginErr}</p>}
+            {loginErr && <p className="text-[12px] text-sred">{loginErr}</p>}
           </form>
-          <div className="px-4 pb-4">
-            <div className="text-[12px] font-semibold text-dim mb-2 flex items-center gap-1.5">
-              <ShieldCheck size={14} className="text-accent" />
-              角色权限矩阵（快速入口）
+        </section>
+
+        <section className="card overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setDemoOpen((v) => !v)}
+            className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-[rgba(56,189,248,0.04)] cursor-pointer transition-colors"
+            aria-expanded={demoOpen}
+          >
+            <Users size={15} className="text-accent shrink-0" />
+            <div className="grow min-w-0">
+              <div className="text-[13px] font-semibold">角色演示入口</div>
+              <div className="text-[11px] text-faint mt-0.5">演示用快速进入，功能保留 · 默认收起</div>
             </div>
-            <div className="overflow-x-auto rounded-lg border border-line">
-              <table className="dtable">
-                <thead>
-                  <tr>
-                    <th>角色</th>
-                    <th>演示账号</th>
-                    <th>可见</th>
-                    <th>可写</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {V19_MATRIX.map((row) => (
-                    <tr key={row.role}>
-                      <td className="font-medium whitespace-nowrap">{row.role}</td>
-                      <td className="text-[12px]">{row.demo}</td>
-                      <td className="text-[12px] text-dim">{row.visible}</td>
-                      <td className="text-[12px]">
-                        {row.writable === '0 行'
-                          ? <Tag tone="dim">{row.writable}</Tag>
-                          : <Tag tone="green">{row.writable}</Tag>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {demoOpen ? <ChevronDown size={16} className="text-faint shrink-0" /> : <ChevronRight size={16} className="text-faint shrink-0" />}
+          </button>
+
+          {demoOpen && (
+            <div className="px-4 pb-4 border-t border-line pt-3">
+              <div className="text-[12px] text-dim mb-3 leading-relaxed">
+                点击下方账号可跳过密码直接进入（仅演示）。正式使用请用工号密码登录。
+              </div>
+              {(['admin', 'leader', 'hq', 'channel'] as FormBucket[]).map((bucket) => {
+                const meta = BUCKET_META[bucket]
+                const users = groups[bucket]
+                if (!users.length) return null
+                return (
+                  <div key={bucket} className="mb-4 last:mb-0">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <ShieldCheck size={14} className="text-accent" />
+                      <div className="text-[13px] font-semibold">{meta.title}</div>
+                      <Tag tone={meta.tone}>{users.length} 个账号</Tag>
+                      <span className="text-[11px] text-faint">{meta.desc}</span>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {users.map((u) => {
+                        const off = u.status !== '在岗'
+                        return (
+                          <button
+                            key={u.id}
+                            type="button"
+                            disabled={off}
+                            onClick={() => {
+                              if (off) return
+                              login(u, { skipPasswordGate: true })
+                              nav('/')
+                            }}
+                            className={`rounded-md border border-line bg-panel2 flex items-center gap-3 px-3 py-2.5 text-left transition-all ${
+                              off ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer hover:border-[rgba(56,189,248,0.45)]'
+                            }`}
+                          >
+                            <div className="grow min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-[13px]">{u.name}</span>
+                                <Tag tone={u.role === 'admin' ? 'accent' : 'dim'}>{ROLE_LABEL[u.role]}</Tag>
+                                {off && <Tag tone="yellow">已离岗</Tag>}
+                              </div>
+                              <div className="text-[11px] text-faint mt-0.5 truncate">{u.title}</div>
+                            </div>
+                            <ChevronRight size={14} className="text-faint shrink-0" />
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+
+              <div className="mt-2">
+                <div className="text-[12px] font-semibold text-dim mb-2 flex items-center gap-1.5">
+                  <ShieldCheck size={14} className="text-accent" />
+                  角色权限矩阵
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-line">
+                  <table className="dtable">
+                    <thead>
+                      <tr>
+                        <th>角色</th>
+                        <th>演示账号</th>
+                        <th>可见</th>
+                        <th>可写</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {V19_MATRIX.map((row) => (
+                        <tr key={row.role}>
+                          <td className="font-medium whitespace-nowrap text-[12px]">{row.role}</td>
+                          <td className="text-[12px]">{row.demo}</td>
+                          <td className="text-[12px] text-dim">{row.visible}</td>
+                          <td className="text-[12px]">
+                            {row.writable === '0 行'
+                              ? <Tag tone="dim">{row.writable}</Tag>
+                              : <Tag tone="green">{row.writable}</Tag>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </section>
       </div>
     </div>

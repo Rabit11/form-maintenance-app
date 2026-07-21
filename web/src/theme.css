@@ -119,6 +119,7 @@ body {
   color: var(--color-dim);
   background: var(--color-panel2);
   font-weight: 600;
+  box-shadow: 0 1px 0 rgba(148, 163, 184, 0.12);
 }
 .excel-ledger-table thead tr:first-child th {
   top: 0;

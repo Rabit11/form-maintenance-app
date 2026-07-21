@@ -11,6 +11,7 @@ export interface User {
   title: string
   status: string
   emp_no?: string | null
+  must_change_password?: number
 }
 export interface Unit { id: number; name: string; short: string; kind: string }
 export interface Channel {
@@ -23,8 +24,10 @@ export interface Bootstrap { today: string; units: Unit[]; channels: Channel[]; 
 interface Session {
   boot: Bootstrap | null
   user: User | null
-  login: (u: User) => void
+  /** skipPasswordGate：角色演示快速进入时跳过强制改密 */
+  login: (u: User, opts?: { skipPasswordGate?: boolean }) => void
   logout: () => void
+  skipPasswordGate: boolean
   unitOf: (id: number) => Unit | undefined
   channelOf: (id: number) => Channel | undefined
 }
@@ -52,6 +55,7 @@ export const ROLE_LABEL: Record<User['role'], string> = {
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [boot, setBoot] = useState<Bootstrap | null>(null)
   const [user, setUser] = useState<User | null>(null)
+  const [skipPasswordGate, setSkipPasswordGate] = useState(false)
 
   useEffect(() => {
     api.get<Bootstrap>('/bootstrap').then((b) => {
@@ -62,8 +66,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (u) {
           setApiUser(u.id)
           setUser(u)
+          setSkipPasswordGate(localStorage.getItem('srpm.skipPwdGate') === '1')
         } else {
           localStorage.removeItem('srpm.user')
+          localStorage.removeItem('srpm.skipPwdGate')
           setApiUser('')
         }
       }
@@ -73,19 +79,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const value = useMemo<Session>(() => ({
     boot,
     user,
-    login: (u) => {
+    skipPasswordGate,
+    login: (u, opts) => {
       localStorage.setItem('srpm.user', u.id)
+      const skip = Boolean(opts?.skipPasswordGate)
+      if (skip) localStorage.setItem('srpm.skipPwdGate', '1')
+      else localStorage.removeItem('srpm.skipPwdGate')
+      setSkipPasswordGate(skip)
       setApiUser(u.id)
       setUser(u)
     },
     logout: () => {
       localStorage.removeItem('srpm.user')
+      localStorage.removeItem('srpm.skipPwdGate')
+      setSkipPasswordGate(false)
       setApiUser('')
       setUser(null)
     },
     unitOf: (id) => boot?.units.find((x) => x.id === id),
     channelOf: (id) => boot?.channels.find((x) => x.id === id),
-  }), [boot, user])
+  }), [boot, user, skipPasswordGate])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

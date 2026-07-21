@@ -5,15 +5,19 @@ import { SessionProvider, useSession } from './store/session'
 import TransitionTool from './pages/transition/TransitionTool'
 import PersonnelAdmin from './pages/admin/PersonnelAdmin'
 import FormLogin from './pages/FormLogin'
+import ChangePasswordGate from './pages/ChangePasswordGate'
 
 function FormMaintenanceShell() {
-  const { boot, user, logout } = useSession()
+  const { boot, user, logout, skipPasswordGate } = useSession()
   const [view, setView] = useState<'form' | 'people'>('form')
 
   if (!boot) {
     return <div className="min-h-screen flex items-center justify-center text-faint text-sm blueprint-bg">正在连接服务…</div>
   }
   if (!user) return <FormLogin />
+  if (user.must_change_password === 1 && !skipPasswordGate) {
+    return <ChangePasswordGate />
+  }
 
   const isSysAdmin = user.role === 'admin'
 

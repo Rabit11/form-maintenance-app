@@ -9,6 +9,25 @@ export type ResultItem = {
   convertedModel: string
 }
 
+function cleanResultPart(value: unknown): string {
+  const text = String(value ?? '')
+    .trim()
+    .replace(/^[，,;；、]+/, '')
+    .replace(/[，,;；、]+$/, '')
+    .trim()
+  if (!text || /^(?:\/|／|—|–|−|-|－|N\/A|n\/a|NA|na|无|空)$/.test(text)) return ''
+  return text
+}
+
+function looksLikeTokenList(parts: string[]): boolean {
+  if (parts.length < 2) return false
+  return parts.every((part) => (
+    /^\d{4}\.\d{1,2}$/.test(part)
+    || /^\d{4}$/.test(part)
+    || /^[A-Za-z][A-Za-z0-9_-]{0,24}$/.test(part)
+  ))
+}
+
 export function splitResultLines(value: unknown): string[] {
   const text = String(value ?? '')
     .replace(/\r\n/g, '\n')
@@ -16,19 +35,28 @@ export function splitResultLines(value: unknown): string[] {
     .trim()
   if (!text) return []
 
-  const byNewline = text.split('\n').map((x) => x.trim()).filter(Boolean)
+  const byNewline = text.split('\n').map(cleanResultPart).filter(Boolean)
   if (byNewline.length > 1) return byNewline
 
-  const only = byNewline[0] || text
-  if (/[；;、]/.test(only)) {
-    return only.split(/[；;、]+/).map((x) => x.trim()).filter(Boolean)
+  const only = byNewline[0] || cleanResultPart(text)
+  if (!only) return []
+
+  if (/[；;、，]/.test(only)) {
+    const parts = only.split(/[；;、，]+/).map(cleanResultPart).filter(Boolean)
+    if (parts.length > 1) return parts
   }
+
+  if (only.includes(',')) {
+    const parts = only.split(/,\s*/).map(cleanResultPart).filter(Boolean)
+    if (looksLikeTokenList(parts)) return parts
+  }
+
   return [only]
 }
 
 export function joinResultLines(lines: string[]): string {
   return (lines || [])
-    .map((x) => String(x ?? '').trim())
+    .map((x) => cleanResultPart(x))
     .filter(Boolean)
     .join('\n')
 }
@@ -38,7 +66,6 @@ export function pairResultItems(row: {
   convertedNames?: string | null
   convertedMonth?: string | null
   convertedModel?: string | null
-  resultCount?: number | null
 } = {}): ResultItem[] {
   const resultNames = splitResultLines(row.resultNames)
   const convertedNames = splitResultLines(row.convertedNames)
@@ -49,7 +76,6 @@ export function pairResultItems(row: {
     convertedNames.length,
     convertedMonths.length,
     convertedModels.length,
-    Number(row.resultCount) > 0 && resultNames.length === 0 ? Number(row.resultCount) : 0,
   )
   if (count <= 0) return []
 
@@ -75,6 +101,31 @@ export function serializeResultItems(items: ResultItem[] = []) {
     resultCount: list.filter((x) => String(x.resultName || '').trim()).length || null,
     convertedCount: list.filter((x) => String(x.convertedName || '').trim()).length || null,
   }
+}
+
+export function normalizeResultFields(row: Record<string, unknown> = {}) {
+  const hasContent = ['resultNames', 'convertedNames', 'convertedMonth', 'convertedModel']
+    .some((key) => String(row[key] ?? '').trim())
+  if (!hasContent) return {}
+
+  const items = pairResultItems(row)
+  if (!items.length) return {}
+
+  const packed: Record<string, unknown> = { ...serializeResultItems(items) }
+  const excelResultCount = Number.isFinite(Number(row.resultCount)) ? Number(row.resultCount) : null
+  const excelConvertedCount = Number.isFinite(Number(row.convertedCount)) ? Number(row.convertedCount) : null
+  if (excelResultCount != null) packed.resultCount = excelResultCount
+  if (excelConvertedCount != null) packed.convertedCount = excelConvertedCount
+  const reserveNames = splitResultLines(row.reserveNames)
+  const reserveYears = splitResultLines(row.reserveYear)
+  if (reserveNames.length > 1 || /[；;、，\n]/.test(String(row.reserveNames ?? ''))) {
+    packed.reserveNames = joinResultLines(reserveNames)
+    if (reserveNames.length) packed.reserveCount = reserveNames.length
+  }
+  if (reserveYears.length > 1 || /[；;、，\n,]/.test(String(row.reserveYear ?? ''))) {
+    packed.reserveYear = joinResultLines(reserveYears)
+  }
+  return packed
 }
 
 export function resultItemsPreview(items: ResultItem[], max = 2) {

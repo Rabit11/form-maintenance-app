@@ -149,7 +149,7 @@ export interface TransitionRow {
   code: string; serial?: string; name: string; level: string; channel: string; sourceChannel?: string; projectType?: string
   /** 司局/处室：仅筛选/编辑辅助，不进 Excel 列 */
   orgOffice?: string
-  major1: string; major2: string; managerUnit?: string; demandUnit: string; responsibleUnit?: string; leadWork: string
+  major1: string; major2: string; center?: string; managerUnit?: string; demandUnit: string; responsibleUnit?: string; leadWork: string
   projectStatus?: string; acceptanceStatus?: string; owner?: string; approvalMonth?: string; startMonth?: string; endMonth?: string; duration?: string | number
   totalBudget: number | null; centralGrant: number | null; internalGrant?: number | null; selfFund: number | null; internalSelfFund?: number | null
   spent?: number | null; budget2026?: number | null; budget2026Actual?: number | null; budget2026Rate?: string
@@ -188,11 +188,12 @@ export interface TransitionImportBatch {
   upload_id: number
   file_name: string
   mode: 'merge' | 'replace'
-  status: '待确认' | '待修正' | '已入库' | '已取消'
+  status: '待确认' | '待修正' | '已入库' | '已取消' | '已撤回' | '处理中'
   uploaded_by: string
   uploaded_at: string
   confirmed_by: string | null
   confirmed_at: string | null
+  backup_file?: string | null
   parsed_count: number
   added_count: number
   updated_count: number
@@ -210,6 +211,8 @@ export interface TransitionImportBatch {
   }
   issues: { sheet?: string; row?: number; issue: string }[]
   rows?: TransitionImportRow[]
+  canUndo?: boolean
+  undoBlockReason?: string
 }
 export interface TransitionChangeLog {
   id: number
@@ -217,11 +220,18 @@ export interface TransitionChangeLog {
   identityKey: string
   projectType: string
   projectName: string
-  action: 'add' | 'update' | 'manual'
+  action: 'add' | 'update' | 'manual' | 'undo'
   changedBy: string
   changedAt: string
   sourceFile: string
   diff: { code: string; field: string; before: string; after: string }[]
+  undone?: number
+  undoOf?: number | null
+  undoneBy?: string | null
+  undoneAt?: string | null
+  hasSnapshot?: boolean
+  canUndo?: boolean
+  undoBlockReason?: string
 }
 export interface TransitionTemplateRules {
   templateFile: string

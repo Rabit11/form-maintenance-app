@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { hashPassword } from './authPassword.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -69,11 +70,12 @@ export function createSchema(db) {
     upload_id INTEGER,
     file_name TEXT NOT NULL,
     mode TEXT NOT NULL DEFAULT 'merge',       -- merge | replace
-    status TEXT NOT NULL DEFAULT '待确认',     -- 待确认 | 已入库 | 已取消
+    status TEXT NOT NULL DEFAULT '待确认',     -- 待确认 | 已入库 | 已取消 | 已撤回
     uploaded_by TEXT NOT NULL,
     uploaded_at TEXT NOT NULL,
     confirmed_by TEXT,
     confirmed_at TEXT,
+    backup_file TEXT,                          -- 确认入库前备份文件名（整表替换撤回用）
     parsed_count INTEGER NOT NULL DEFAULT 0,
     added_count INTEGER NOT NULL DEFAULT 0,
     updated_count INTEGER NOT NULL DEFAULT 0,
@@ -116,11 +118,17 @@ export function createSchema(db) {
     identity_key TEXT NOT NULL,
     project_type TEXT,
     project_name TEXT,
-    action TEXT NOT NULL,               -- add | update | manual
+    action TEXT NOT NULL,               -- add | update | manual | undo
     changed_by TEXT NOT NULL,
     changed_at TEXT NOT NULL,
     diff_json TEXT NOT NULL DEFAULT '[]',
-    source_file TEXT
+    source_file TEXT,
+    before_json TEXT,                  -- 变更前整行快照
+    after_json TEXT,                   -- 变更后整行快照
+    undone INTEGER NOT NULL DEFAULT 0,
+    undo_of INTEGER,                   -- 指向被撤回的 log id（action=undo 时）
+    undone_by TEXT,
+    undone_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS users (
@@ -132,7 +140,9 @@ export function createSchema(db) {
     title TEXT,
     avatar TEXT,
     status TEXT NOT NULL DEFAULT '在岗', -- 在岗 | 已离岗（权限自动回收）
-    emp_no TEXT                          -- 六位工号；登录密码与工号一致
+    emp_no TEXT,                         -- 六位工号（账户）
+    password_hash TEXT,                  -- 登录密码哈希；初始=工号
+    must_change_password INTEGER NOT NULL DEFAULT 1  -- 初次登录须改密
   );
 
   CREATE TABLE IF NOT EXISTS projects (
@@ -343,6 +353,28 @@ export function migrateSchema(db) {
   if (!cols.includes('emp_no')) {
     db.exec('ALTER TABLE users ADD COLUMN emp_no TEXT');
   }
+  if (!cols.includes('password_hash')) {
+    db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT');
+  }
+  if (!cols.includes('must_change_password')) {
+    db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1');
+  }
+
+  const logCols = db.prepare('PRAGMA table_info(transition_change_logs)').all().map((c) => c.name);
+  if (logCols.length) {
+    if (!logCols.includes('before_json')) db.exec('ALTER TABLE transition_change_logs ADD COLUMN before_json TEXT');
+    if (!logCols.includes('after_json')) db.exec('ALTER TABLE transition_change_logs ADD COLUMN after_json TEXT');
+    if (!logCols.includes('undone')) db.exec('ALTER TABLE transition_change_logs ADD COLUMN undone INTEGER NOT NULL DEFAULT 0');
+    if (!logCols.includes('undo_of')) db.exec('ALTER TABLE transition_change_logs ADD COLUMN undo_of INTEGER');
+    if (!logCols.includes('undone_by')) db.exec('ALTER TABLE transition_change_logs ADD COLUMN undone_by TEXT');
+    if (!logCols.includes('undone_at')) db.exec('ALTER TABLE transition_change_logs ADD COLUMN undone_at TEXT');
+  }
+
+  const batchCols = db.prepare('PRAGMA table_info(transition_import_batches)').all().map((c) => c.name);
+  if (batchCols.length && !batchCols.includes('backup_file')) {
+    db.exec('ALTER TABLE transition_import_batches ADD COLUMN backup_file TEXT');
+  }
+
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_emp_no
     ON users(emp_no) WHERE emp_no IS NOT NULL AND emp_no != ''`);
   db.exec(`CREATE TABLE IF NOT EXISTS transition_channel_owners (
@@ -376,23 +408,6 @@ export function ensureAuthAccounts(db) {
     u_ch_ndrc: '201003',
     u_ch_shkc: '201004',
     u_ch_zgsf: '201005',
-    u_unit_mgr: '210001',
-    u_unit_pm: '210002',
-    u_chief: '130001',
-    u_chief2: '130002',
-    u_team_owner: '120001',
-    u_team_tech: '120002',
-    u_team_pm: '120003',
-    u_fin_head: '140001',
-    u_fin_staff: '140002',
-    u_fin: '140003',
-    u_type_nat: '300001',
-    u_type_rd: '300002',
-    u_type_local: '300003',
-    u_type_corp: '300004',
-    u_type_lab: '300005',
-    u_type_coop: '300006',
-    u_type_misc: '300007',
   };
 
   const upsertUser = db.prepare(`INSERT INTO users (id,name,role,scope,unit_id,title,status,emp_no)
@@ -417,12 +432,49 @@ export function ensureAuthAccounts(db) {
   upsertUser.run('u_ch_ndrc', '唐砚秋', 'mgmt', 'channel', 7, '总部层级渠道专员 / 国家级', '201003');
   upsertUser.run('u_ch_shkc', '许怀川', 'mgmt', 'channel', 7, '总部层级渠道专员 / 地方级', '201004');
   upsertUser.run('u_ch_zgsf', '韩叙白', 'mgmt', 'channel', 7, '总部层级渠道专员 / 公司级', '201005');
-  // 单位负责人标题对齐「项目管理团队负责人」
-  upsertUser.run('u_unit_mgr', '方致远', 'mgmt', 'unit', 1, '二级单位项目管理团队负责人 / 单位科研管理部门', '210001');
-  upsertUser.run('u_unit_pm', '田念慈', 'mgmt', 'unit', 1, '二级单位项目管理团队负责人 / 单位项目主管', '210002');
+  // 已取消「二级单位项目管理团队负责人」角色账号
+  try {
+    db.prepare("DELETE FROM users WHERE id IN ('u_unit_mgr','u_unit_pm') OR emp_no IN ('210001','210002')").run();
+  } catch { /* ignore */ }
+
+  // 删除各二级单位人员账号（所属单位 kind=unit；不含总部 hq）
+  try {
+    db.prepare(`DELETE FROM users WHERE id IN (
+      'u_team_owner','u_team_tech','u_team_pm','u_chief2','u_fin_head','u_fin_staff','u_fin'
+    ) OR emp_no IN (
+      '120001','120002','120003','130002','140001','140002','140003'
+    )`).run();
+    db.prepare(`DELETE FROM users WHERE unit_id IN (SELECT id FROM units WHERE kind='unit')`).run();
+  } catch { /* ignore */ }
+
+  // 删除一级总师、项目类型主管账号（表单维护侧仅保留超管/领导/总部总维护/渠道专员）
+  try {
+    db.prepare(`DELETE FROM users WHERE id IN (
+      'u_chief',
+      'u_type_nat','u_type_rd','u_type_local','u_type_corp','u_type_lab','u_type_coop','u_type_misc'
+    ) OR emp_no IN (
+      '130001','300001','300002','300003','300004','300005','300006','300007'
+    ) OR (role='chief') OR (role='mgmt' AND scope='type')`).run();
+    db.prepare(`UPDATE transition_type_owners SET owner_user_id='' WHERE owner_user_id LIKE 'u_type_%'`).run();
+  } catch { /* ignore */ }
 
   const upd = db.prepare(`UPDATE users SET emp_no=? WHERE id=? AND (emp_no IS NULL OR emp_no='')`);
   for (const [id, empNo] of Object.entries(EMP_NOS)) {
     upd.run(empNo, id);
+  }
+
+  // 为尚无密码的账号写入初始密码（=工号），并标记须改密
+  ensureInitialPasswords(db);
+}
+
+/** 缺省密码：工号；已有 password_hash 的不覆盖 */
+export function ensureInitialPasswords(db) {
+  const rows = db.prepare(`SELECT id, emp_no, password_hash FROM users
+    WHERE emp_no IS NOT NULL AND emp_no != ''`).all();
+  const setPwd = db.prepare(`UPDATE users SET password_hash=?, must_change_password=1
+    WHERE id=? AND (password_hash IS NULL OR password_hash='')`);
+  for (const row of rows) {
+    if (row.password_hash) continue;
+    setPwd.run(hashPassword(row.emp_no), row.id);
   }
 }

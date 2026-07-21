@@ -1,6 +1,6 @@
 // 造数脚本：拟真演示数据，锚定“今天”动态生成四色状态
 import { unlinkSync, existsSync } from 'node:fs';
-import { openDb, createSchema, DB_PATH } from './db.js';
+import { openDb, createSchema, ensureAuthAccounts, DB_PATH } from './db.js';
 import { todayISO, addDays, statusColor, evalGrade } from './domain.js';
 
 const TODAY = todayISO();
@@ -72,11 +72,6 @@ const chByKey = Object.fromEntries(CHANNELS.map((c) => [c.key, c]));
 
 const USERS = [
   { id: 'u_leader', name: '周明远', role: 'leader', scope: 'hq', unit_id: 7, title: '公司领导 / 科技管理数智大屏决策查看' },
-  { id: 'u_team_owner', name: '林晚晴', role: 'team', scope: 'self', unit_id: 1, title: '项目团队 / 项目责任人' },
-  { id: 'u_team_tech', name: '马浩南', role: 'team', scope: 'self', unit_id: 1, title: '项目团队 / 技术责任人' },
-  { id: 'u_team_pm', name: '吴思远', role: 'team', scope: 'self', unit_id: 1, title: '项目团队 / 项目主管' },
-  { id: 'u_chief', name: '陈铁军', role: 'chief', scope: 'chief', unit_id: 7, title: '责任总师 / 一级总师（公司级）' },
-  { id: 'u_chief2', name: '蔡文渊', role: 'chief', scope: 'chief', unit_id: 1, title: '责任总师 / 二级总师（单位级）' },
   { id: 'u_hq', name: '王建国', role: 'mgmt', scope: 'hq', unit_id: 7, title: '总部总维护 / 责任处室处长', emp_no: '200001' },
   { id: 'u_hq_staff', name: '何雨桐', role: 'mgmt', scope: 'hq', unit_id: 7, title: '总部总维护 / 科研项目主管', emp_no: '200002' },
   { id: 'u_ch_miit', name: '梁承泽', role: 'mgmt', scope: 'channel', unit_id: 7, title: '总部层级渠道专员 / 国家级', emp_no: '201001' },
@@ -84,20 +79,7 @@ const USERS = [
   { id: 'u_ch_ndrc', name: '唐砚秋', role: 'mgmt', scope: 'channel', unit_id: 7, title: '总部层级渠道专员 / 国家级', emp_no: '201003' },
   { id: 'u_ch_shkc', name: '许怀川', role: 'mgmt', scope: 'channel', unit_id: 7, title: '总部层级渠道专员 / 地方级', emp_no: '201004' },
   { id: 'u_ch_zgsf', name: '韩叙白', role: 'mgmt', scope: 'channel', unit_id: 7, title: '总部层级渠道专员 / 公司级', emp_no: '201005' },
-  { id: 'u_unit_mgr', name: '方致远', role: 'mgmt', scope: 'unit', unit_id: 1, title: '二级单位项目管理团队负责人 / 单位科研管理部门', emp_no: '210001' },
-  { id: 'u_unit_pm', name: '田念慈', role: 'mgmt', scope: 'unit', unit_id: 1, title: '二级单位项目管理团队负责人 / 单位项目主管', emp_no: '210002' },
-  { id: 'u_fin_head', name: '毕仲文', role: 'finance', scope: 'unit', unit_id: 1, title: '财务团队 / 二级单位财务负责人' },
-  { id: 'u_fin_staff', name: '龚雪君', role: 'finance', scope: 'unit', unit_id: 1, title: '财务团队 / 经费核销经办' },
-  { id: 'u_fin', name: '赵美玲', role: 'finance', scope: 'unit', unit_id: 2, title: '财务团队 / 上飞公司财务主管' },
   { id: 'u_super', name: '系统超级管理员', role: 'admin', scope: 'hq', unit_id: 7, title: '系统超级管理员 / 人员添加·删除·权限编辑', emp_no: '100001' },
-  // 表单维护：按项目类型拆分后的专项分表主管（scope=type，仅维护授权类型）
-  { id: 'u_type_nat', name: '顾言蹊', role: 'mgmt', scope: 'type', unit_id: 7, title: '项目类型主管 / 国家级专项分表' },
-  { id: 'u_type_rd', name: '蒋一帆', role: 'mgmt', scope: 'type', unit_id: 7, title: '项目类型主管 / 重点研发与基金' },
-  { id: 'u_type_local', name: '沈望舒', role: 'mgmt', scope: 'type', unit_id: 7, title: '项目类型主管 / 地方级专项分表' },
-  { id: 'u_type_corp', name: '秦月朗', role: 'mgmt', scope: 'type', unit_id: 7, title: '项目类型主管 / 公司滚动与重大专项' },
-  { id: 'u_type_lab', name: '郑晓岚', role: 'mgmt', scope: 'type', unit_id: 7, title: '项目类型主管 / 大飞机研究院分表' },
-  { id: 'u_type_coop', name: '马浩博', role: 'mgmt', scope: 'type', unit_id: 7, title: '项目类型主管 / 科技周与合作类' },
-  { id: 'u_type_misc', name: '宋知行', role: 'mgmt', scope: 'type', unit_id: 7, title: '项目类型主管 / 其他专项分表' },
 ];
 
 /** 渠道(C列) → 总部层级渠道专员（可读全部，授权映射到层级后可改该层级渠道） */
@@ -288,13 +270,10 @@ db.transaction(() => {
   for (const u of UNITS) ins.unit.run(u.id, u.name, u.short, u.kind || 'unit');
   for (const c of CHANNELS) ins.channel.run(c.id, c.key, c.name, c.level, c.org, c.dept, JSON.stringify(c.flow), JSON.stringify(c.declare), JSON.stringify(c.filing), JSON.stringify(c.chain), c.mode, JSON.stringify(c.assess));
   const EMP_FALLBACK = {
-    u_leader: '110001', u_team_owner: '120001', u_team_tech: '120002', u_team_pm: '120003',
-    u_chief: '130001', u_chief2: '130002', u_hq: '200001', u_hq_staff: '200002',
+    u_leader: '110001',
+    u_hq: '200001', u_hq_staff: '200002',
     u_ch_miit: '201001', u_ch_most: '201002', u_ch_ndrc: '201003', u_ch_shkc: '201004', u_ch_zgsf: '201005',
-    u_unit_mgr: '210001', u_unit_pm: '210002', u_fin_head: '140001', u_fin_staff: '140002',
-    u_fin: '140003', u_super: '100001',
-    u_type_nat: '300001', u_type_rd: '300002', u_type_local: '300003', u_type_corp: '300004',
-    u_type_lab: '300005', u_type_coop: '300006', u_type_misc: '300007',
+    u_super: '100001',
   };
   for (const u of USERS) {
     ins.user.run(u.id, u.name, u.role, u.scope, u.unit_id, u.title, u.emp_no || EMP_FALLBACK[u.id] || null);
@@ -583,13 +562,13 @@ db.transaction(() => {
   }
   ins.alert.run(projByName['民机健康管理(PHM)大数据平台'].id, '经费', 'yellow', '【经费预警】PHM 大数据平台：年度执行率 38%，低于时序进度基准', null, addDays(TODAY, -5), '站内,邮箱', 0);
 
-  // ---------- 表单维护：项目类型主管授权 ----------
+  // ---------- 表单维护：项目类型分工备注（已取消类型主管登录账号，仅保留名称备忘） ----------
   const insTypeOwner = db.prepare(`INSERT INTO transition_type_owners
     (project_type, owner_user_id, owner_name, can_import, can_export)
     VALUES (?,?,?,?,1)`);
   for (const group of FORM_TYPE_OWNER_MAP) {
     for (const projectType of group.types) {
-      insTypeOwner.run(projectType, group.userId, group.name, 1);
+      insTypeOwner.run(projectType, '', group.name, 1);
     }
   }
 
@@ -622,6 +601,8 @@ db.transaction(() => {
   ];
   AUD.forEach((a, i) => ins.audit.run(addDays(TODAY, -(i * 2 + 1)) + ` ${String(ri(8, 18)).padStart(2, '0')}:${String(ri(10, 59))}:00`, a[0], a[1], a[2], a[3]));
 })();
+
+ensureAuthAccounts(db);
 
 // ---------- 汇总输出 ----------
 const count = (t) => db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n;

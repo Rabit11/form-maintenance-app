@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, extname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { openDb, createSchema, ensureAuthAccounts } from './db.js';
+import { hashPassword, verifyPassword, publicUser, assertNewPassword } from './authPassword.js';
 import {
   backupDirInfo,
   createDatabaseBackup,
@@ -36,11 +37,20 @@ import {
   uniqueArchiveName,
 } from './transitionFiles.js';
 import { splitTotalBudget, validateFundingRelation } from './fundingRules.js';
-import { pairResultItems } from './resultItems.js';
+import { pairResultItems, normalizeResultFields, splitResultLines } from './resultItems.js';
+import { buildStyledTransitionWorkbookBuffer, exportTransitionFieldValue } from './transitionExport.js';
+import {
+  evaluateBatchUndo,
+  evaluateLogUndo,
+  applyLogRollback,
+  restoreTransitionRecordsFromBackup,
+} from './transitionUndo.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = join(__dirname, '..', 'data', 'uploads');
-const TRANSITION_TEMPLATE_FILE = '预先研究项目信息-表头 (1).xlsx';
+/** 可上传样例（格式并集基准）；旧表头模板作为兼容回退 */
+const TRANSITION_TEMPLATE_FILE = '预先研究项目信息（样例）.xlsx';
+const TRANSITION_TEMPLATE_FILE_LEGACY = '预先研究项目信息-表头 (1).xlsx';
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const db = openDb();
@@ -98,6 +108,8 @@ const TRANSITION_FIELDS = [
   { group: '项目基本信息', subGroup: null, code: 'major1', label: '一级专业', required: false, width: 16 },
   { group: '项目基本信息', subGroup: null, code: 'major2', label: '二级专业', required: false, width: 18 },
   { group: '项目基本信息', subGroup: null, code: 'name', label: '项目名称', required: true, width: 34 },
+  // 样例并集：所中心位于项目名称与管理/需求单位之间
+  { group: '项目基本信息', subGroup: null, code: 'center', label: '所中心', required: false, width: 14, aliases: ['所/中心', '中心', '责任中心'] },
   { group: '项目基本信息', subGroup: null, code: 'demandUnit', label: '管理/需求单位', required: false, width: 18 },
   { group: '项目基本信息', subGroup: null, code: 'responsibleUnit', label: '责任单位', required: true, width: 16 },
   { group: '项目基本信息', subGroup: null, code: 'projectStatus', label: '项目状态', required: true, width: 12 },
@@ -261,9 +273,12 @@ r.use((req, res, next) => {
   if (req.path === '/bootstrap' || req.path === '/auth/employee-login') return next();
   const id = req.header('x-user');
   if (!id) return res.status(401).json({ error: '登录状态已失效，请重新登录' });
-  const u = db.prepare('SELECT status FROM users WHERE id=?').get(id);
+  const u = db.prepare('SELECT status, must_change_password FROM users WHERE id=?').get(id);
   if (!u) return res.status(401).json({ error: '账号不存在或已被删除，请重新登录' });
   if (u.status === '已离岗') return res.status(401).json({ error: '该账号已离岗，权限已自动回收（系统超级管理员 7 个工作日内完成注销/移交）' });
+  if (req.path !== '/auth/change-password' && Number(u.must_change_password) === 1) {
+    return res.status(403).json({ error: '首次登录须先修改密码后再使用系统' });
+  }
   next();
 });
 
@@ -275,26 +290,65 @@ function isSixDigitEmpNo(empNo) {
   return /^\d{6}$/.test(empNo);
 }
 
-/** 工号登录：六位工号，密码与工号一致（含系统超级管理员等） */
+/** 工号账户密码登录：初始密码=工号；首次登录须改密 */
 r.post('/auth/employee-login', (req, res) => {
   const empNo = normalizeEmpNo(req.body?.empNo ?? req.body?.emp_no);
-  const password = String(req.body?.password ?? '').trim();
+  const password = String(req.body?.password ?? '');
   if (!isSixDigitEmpNo(empNo)) {
     return res.status(400).json({ error: '请输入六位数字工号' });
   }
-  if (password !== empNo) {
-    return res.status(401).json({ error: '工号或密码错误（初始密码与工号一致）' });
+  if (!password) {
+    return res.status(400).json({ error: '请输入密码' });
   }
   const user = db.prepare('SELECT * FROM users WHERE emp_no=?').get(empNo);
   if (!user) {
-    return res.status(401).json({ error: '工号或密码错误（初始密码与工号一致）' });
+    return res.status(401).json({ error: '工号或密码错误' });
   }
   if (user.status === '已离岗') {
     return res.status(401).json({ error: '该账号已离岗，无法登录' });
   }
-  // 四类演示角色走页面快速入口；其余（及也可选）用工号密码登录，初始密码=工号
-  audit(user.name, '登录', '工号登录', `emp_no=${empNo}`);
-  res.json({ user });
+  const stored = user.password_hash;
+  const ok = stored
+    ? verifyPassword(password, stored)
+    : password === empNo; // 兼容尚未迁移哈希的旧库
+  if (!ok) {
+    return res.status(401).json({ error: '工号或密码错误' });
+  }
+  // 旧库无哈希时补写初始密码
+  if (!stored && password === empNo) {
+    db.prepare('UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?')
+      .run(hashPassword(empNo), user.id);
+    user.password_hash = null;
+    user.must_change_password = 1;
+  }
+  const fresh = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+  audit(fresh.name, '登录', '账户密码登录', `emp_no=${empNo}`);
+  res.json({ user: publicUser(fresh), mustChangePassword: Number(fresh.must_change_password) === 1 });
+});
+
+/** 修改密码（初次登录强制改密 / 自愿改密） */
+r.post('/auth/change-password', (req, res) => {
+  const user = currentUser(req);
+  if (!user) return res.status(401).json({ error: '请先登录' });
+  const oldPassword = String(req.body?.oldPassword ?? req.body?.old_password ?? '');
+  const newPassword = req.body?.newPassword ?? req.body?.new_password;
+  const confirm = String(req.body?.confirmPassword ?? req.body?.confirm_password ?? '');
+  if (!oldPassword) return res.status(400).json({ error: '请输入当前密码' });
+  const check = assertNewPassword(newPassword, user.emp_no);
+  if (check.error) return res.status(400).json({ error: check.error });
+  if (check.password !== confirm) return res.status(400).json({ error: '两次输入的新密码不一致' });
+  const ok = user.password_hash
+    ? verifyPassword(oldPassword, user.password_hash)
+    : (user.emp_no && oldPassword === user.emp_no);
+  if (!ok) return res.status(401).json({ error: '当前密码不正确' });
+  if (oldPassword === check.password) {
+    return res.status(400).json({ error: '新密码不能与当前密码相同' });
+  }
+  db.prepare('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?')
+    .run(hashPassword(check.password), user.id);
+  audit(user.name, '改密', '修改登录密码', `emp_no=${user.emp_no || ''}`);
+  const fresh = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+  res.json({ ok: true, user: publicUser(fresh) });
 });
 
 // ---------- 项目富化 ----------
@@ -349,7 +403,7 @@ r.get('/bootstrap', (req, res) => {
   const channels = db.prepare('SELECT * FROM channels').all().map((c) => ({
     ...c, flow: J(c.flow_json, []), declare: J(c.declare_json, []), filing: J(c.filing_json, []), chain: J(c.approve_chain_json, []), assess: J(c.assess_json, []),
   }));
-  const users = db.prepare('SELECT * FROM users').all();
+  const users = db.prepare('SELECT * FROM users').all().map(publicUser);
   res.json({ today: TODAY(), units, channels, users });
 });
 
@@ -938,21 +992,30 @@ r.get('/transformations', (req, res) => {
   res.json({ rows, stats, readonly: user.role === 'leader' });
 });
 
+/** 样例表中空值占位：/ — - － 等，按空白处理 */
+function isBlankPlaceholder(value) {
+  const text = String(value ?? '').replace(/\s+/g, '').trim();
+  return !text || /^(?:\/|／|—|–|−|-|－|N\/A|n\/a|NA|na|无|空)$/.test(text);
+}
+
 function cellText(value) {
   if (value == null) return '';
   if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (isBlankPlaceholder(value)) return '';
   return String(value).replace(/\s+/g, ' ').trim();
 }
 
 function cellRawText(value) {
   if (value == null) return '';
   if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (isBlankPlaceholder(value)) return '';
   return String(value).replace(/\r\n/g, '\n').trim();
 }
 
 function cellNumber(value) {
   if (value == null || value === '') return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (isBlankPlaceholder(value)) return null;
   const text = cellText(value).replace(/,/g, '').replace(/万元/g, '').replace(/%$/, '');
   if (!text) return null;
   const n = Number(text);
@@ -971,11 +1034,12 @@ function transitionFieldLabels(field) {
   return [field.label, ...(field.aliases || [])].map((x) => normalizeHeaderLabel(x));
 }
 
-function buildTransitionHeaderMap(headerLine, subHeaderLine = []) {
+/** mid/leaf 为主；groupLine 补「备注」等仅写在顶层分组行的列名（样例并集） */
+function buildTransitionHeaderMap(headerLine, subHeaderLine = [], groupLine = []) {
   const colByLabel = new Map();
-  const maxCols = Math.max(headerLine.length, subHeaderLine.length, TRANSITION_FIELDS.length);
+  const maxCols = Math.max(headerLine.length, subHeaderLine.length, groupLine.length, TRANSITION_FIELDS.length);
   for (let c = 0; c < maxCols; c += 1) {
-    const labels = [headerLine[c], subHeaderLine[c]].map((x) => normalizeHeaderLabel(x)).filter(Boolean);
+    const labels = [headerLine[c], subHeaderLine[c], groupLine[c]].map((x) => normalizeHeaderLabel(x)).filter(Boolean);
     for (const label of labels) if (!colByLabel.has(label)) colByLabel.set(label, c);
   }
   const map = new Map();
@@ -1191,9 +1255,11 @@ function normalizeTransitionRow(row) {
   const responsibleUnit = cellText(row.responsibleUnit || row.demandUnit || row.managerUnit || row.unit);
   const projectStatus = transitionProjectStatus(row);
   const orgOffice = transitionOrgOffice(row, projectType);
-  const { center: _removedCenter, ...rowWithoutCenter } = row;
+  const center = cellText(row.center);
+  const resultPack = normalizeResultFields(row);
   return {
-    ...rowWithoutCenter,
+    ...row,
+    ...resultPack,
     id: row.id || `TR-${Date.now().toString(36)}-${randomBytes(2).toString('hex')}`,
     sourceType: projectType,
     sourceSheet: projectType,
@@ -1202,10 +1268,11 @@ function normalizeTransitionRow(row) {
     channel: sourceChannel,
     sourceChannel,
     orgOffice,
+    center,
     responsibleUnit,
     projectStatus,
     leadWork: row.leadWork || [row.responsibleUnit, row.demandUnit].filter(Boolean).join(' / '),
-    transformSummary: transitionTransformSummary(row),
+    transformSummary: transitionTransformSummary({ ...row, ...resultPack }),
     closedExecutionRate: row.closedExecutionRate || row.executionRate || '',
     budget2026Actual: row.budget2026Actual ?? '',
     budget2026Rate: row.budget2026Rate || '',
@@ -1371,34 +1438,31 @@ const DEFAULT_FORM_TYPE_OWNERS = [
   { userId: 'u_type_misc', name: '宋知行', types: ['KT', 'XP', '高质量专项'] },
 ];
 
+/** 已取消项目类型主管登录账号：清理残留用户，不再自动建号 */
 function ensureFormTypeOwnerUsers() {
-  const insUser = db.prepare(`INSERT INTO users (id,name,role,scope,unit_id,title,status)
-    VALUES (?,?,?,?,?,?,'在岗') ON CONFLICT(id) DO NOTHING`);
-  for (const g of DEFAULT_FORM_TYPE_OWNERS) {
-    const title = `项目类型主管 / ${g.types.slice(0, 2).join('、')}${g.types.length > 2 ? '等' : ''}`;
-    insUser.run(g.userId, g.name, 'mgmt', 'type', 7, title);
-  }
+  try {
+    db.prepare(`DELETE FROM users WHERE id LIKE 'u_type_%' OR (role='mgmt' AND scope='type')
+      OR emp_no IN ('300001','300002','300003','300004','300005','300006','300007')`).run();
+  } catch { /* ignore */ }
 }
 
 function ensureFormTypeOwners() {
   ensureFormTypeOwnerUsers();
+  // 仅保留类型分工名称备忘，不绑定可登录 user_id
   const upsert = db.prepare(`INSERT INTO transition_type_owners (project_type,owner_user_id,owner_name,can_import,can_export)
     VALUES (?,?,?,?,1)
     ON CONFLICT(project_type) DO UPDATE SET
-      owner_user_id=COALESCE(NULLIF(transition_type_owners.owner_user_id,''), excluded.owner_user_id),
-      owner_name=CASE
-        WHEN transition_type_owners.owner_user_id IS NULL OR transition_type_owners.owner_user_id='' THEN excluded.owner_name
-        ELSE transition_type_owners.owner_name
-      END`);
+      owner_user_id='',
+      owner_name=COALESCE(NULLIF(transition_type_owners.owner_name,''), excluded.owner_name)`);
   for (const group of DEFAULT_FORM_TYPE_OWNERS) {
-    for (const projectType of group.types) upsert.run(projectType, group.userId, group.name, 1);
+    for (const projectType of group.types) upsert.run(projectType, '', group.name, 1);
   }
   let dictionaryTypes = [];
   try { dictionaryTypes = transitionTemplateDictionaries().projectTypes || []; } catch { dictionaryTypes = []; }
   const misc = DEFAULT_FORM_TYPE_OWNERS.find((x) => x.userId === 'u_type_misc') || DEFAULT_FORM_TYPE_OWNERS[0];
   for (const projectType of dictionaryTypes) {
-    const row = db.prepare('SELECT owner_user_id FROM transition_type_owners WHERE project_type=?').get(projectType);
-    if (!row?.owner_user_id) upsert.run(projectType, misc.userId, misc.name, 1);
+    const row = db.prepare('SELECT owner_name FROM transition_type_owners WHERE project_type=?').get(projectType);
+    if (!row) upsert.run(projectType, '', misc.name, 1);
   }
 }
 
@@ -1503,12 +1567,12 @@ function formLinkedProjectNames(user, mode) {
 }
 
 /**
- * 四类核心角色（表单维护）：
+ * 核心角色（表单维护）：
  * - 总部领导：全部只读
  * - 总部总维护：读写全部
  * - 总部层级渠道专员：全部可读，仅可改本人层级(B列)下的合法渠道(C列)
- * - 二级单位项目管理团队负责人：仅本单位可读可写
  * 另保留：项目类型主管、财务/团队/总师等只读角色
+ * （已取消二级单位项目管理团队负责人写权限角色）
  */
 function formAccess(user) {
   const ownedTypes = formOwnedTypes(user);
@@ -1679,29 +1743,6 @@ function formAccess(user) {
       v19Note: 'V19：二级单位财务仅查看本单位项目经费台账；无修改权限',
     };
   }
-  if (user?.role === 'mgmt' && user?.scope === 'unit') {
-    return {
-      mode: 'unit',
-      roleKey: 'mgmt_unit',
-      roleLabel: '二级单位项目管理团队负责人',
-      maintObject: ownedUnitNames.length ? `本单位项目：${ownedUnitNames.join(' / ')}` : '本单位所属项目',
-      viewScope: 'unit',
-      canRead: true,
-      canWrite: true,
-      canImportMaster: false,
-      canConfirm: true,
-      canAssign: false,
-      canExport: true,
-      canExportAll: false,
-      ownedTypes: null,
-      ownedChannels: null,
-      ownedLevels: null,
-      ownedUnitNames,
-      label: '单位负责人 · 本单位可写',
-      rights: { read: '本单位项目', write: '可修改本单位项目', export: '可导出本单位 Excel' },
-      v19Note: '二级单位项目管理团队负责人：仅本单位范围可读可写，不可改其他单位',
-    };
-  }
   return {
     mode: 'readonly',
     roleKey: 'readonly',
@@ -1868,8 +1909,16 @@ function validateTransitionRow(input) {
     internalGrant: cellNumber(row.internalGrant),
     internalSelfFund: cellNumber(row.internalSelfFund),
   }).issues);
-  for (const [code, label] of [['approvalMonth', '项目立项年月'], ['startMonth', '项目开始年月'], ['endMonth', '项目结束年月'], ['convertedMonth', '转化年月']]) {
-    if (row[code] && parseYearMonth(row[code]) == null) warnings.push(`${label}格式应为 YYYY.M 或 YYYY-MM`);
+  for (const [code, label] of [['approvalMonth', '项目立项年月'], ['startMonth', '项目开始年月'], ['endMonth', '项目结束年月']]) {
+    if (row[code] && parseYearMonth(row[code]) == null) warnings.push(`${label}格式应为 YYYY、YYYY.M 或 YYYY-MM`);
+  }
+  // 转化年月允许样例中的多行/逗号列表，逐条校验
+  if (row.convertedMonth) {
+    const months = splitResultLines(row.convertedMonth);
+    const bad = months.length
+      ? months.some((m) => parseYearMonth(m) == null)
+      : parseYearMonth(row.convertedMonth) == null;
+    if (bad) warnings.push('转化年月格式应为 YYYY、YYYY.M 或 YYYY-MM');
   }
   const startMonth = parseYearMonth(row.startMonth);
   const endMonth = parseYearMonth(row.endMonth);
@@ -1893,8 +1942,45 @@ function transitionIdentity(input) {
 function upsertTransitionRecord(input, batchId = null) {
   const row0 = normalizeTransitionRow(input);
   const identity = transitionIdentity(row0) || `id:${normalizeKey(row0.id)}`;
-  const existing = db.prepare('SELECT id FROM transition_records WHERE identity_key=?').get(identity);
-  const row = normalizeTransitionRow({ ...row0, id: existing?.id || row0.id });
+  const byIdentity = db.prepare('SELECT id FROM transition_records WHERE identity_key=?').get(identity);
+  const byId = row0.id
+    ? db.prepare('SELECT id, identity_key FROM transition_records WHERE id=?').get(row0.id)
+    : null;
+
+  // 同一主键行变更了名称/渠道/单位导致 identity 变化：原地更新 identity_key，避免 id 唯一冲突
+  if (!byIdentity && byId && byId.identity_key !== identity) {
+    const row = normalizeTransitionRow({ ...row0, id: byId.id });
+    db.prepare(`UPDATE transition_records SET
+      identity_key=?, project_type=?, project_name=?, source_file=?, source_excel_sheet=?, source_row=?,
+      updated_by=?, updated_at=?, batch_id=?, row_json=?
+      WHERE id=?`)
+      .run(
+        identity,
+        transitionProjectType(row),
+        row.name || '',
+        row.sourceFile || '',
+        row.sourceExcelSheet || '',
+        row.sourceRow || null,
+        row.updatedBy || '汇总表维护人',
+        row.updatedAt || TODAY(),
+        batchId,
+        JSON.stringify(row),
+        byId.id,
+      );
+    db.prepare(`INSERT INTO transition_type_owners (project_type,owner_name)
+      VALUES (?,?) ON CONFLICT(project_type) DO NOTHING`)
+      .run(transitionProjectType(row), row.updatedBy || '总部项目类型主管');
+    return;
+  }
+
+  let id = byIdentity?.id || row0.id;
+  if (!id) id = `TR-${Date.now()}`;
+  // 新 identity 插入时若 id 已被其他行占用，换新 id
+  if (!byIdentity) {
+    const idClash = db.prepare('SELECT id FROM transition_records WHERE id=?').get(id);
+    if (idClash) id = `TR-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  }
+  const row = normalizeTransitionRow({ ...row0, id });
   db.prepare(`INSERT INTO transition_records
     (id,identity_key,project_type,project_name,source_file,source_excel_sheet,source_row,updated_by,updated_at,batch_id,row_json)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -2062,16 +2148,29 @@ function transitionDiff(before, after) {
 function insertTransitionChangeLog({ batchId = null, row, action, userName, sourceFile = '', before = null, changedAt = null }) {
   const normalized = normalizeTransitionRow(row);
   const diff = transitionDiff(before, normalized);
-  if (action !== 'add' && diff.length === 0) return;
-  db.prepare(`INSERT INTO transition_change_logs
-    (batch_id,identity_key,project_type,project_name,action,changed_by,changed_at,diff_json,source_file)
-    VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(batchId, transitionIdentity(normalized) || normalized.id, transitionProjectType(normalized), normalized.name || '',
-      action, userName || normalized.updatedBy || '表单维护人', changedAt || NOW(), JSON.stringify(diff), sourceFile || normalized.sourceFile || '');
+  if (action !== 'add' && action !== 'undo' && diff.length === 0) return null;
+  const info = db.prepare(`INSERT INTO transition_change_logs
+    (batch_id,identity_key,project_type,project_name,action,changed_by,changed_at,diff_json,source_file,before_json,after_json,undone,undo_of)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,0,NULL)`)
+    .run(
+      batchId,
+      transitionIdentity(normalized) || normalized.id,
+      transitionProjectType(normalized),
+      normalized.name || '',
+      action,
+      userName || normalized.updatedBy || '表单维护人',
+      changedAt || NOW(),
+      JSON.stringify(diff),
+      sourceFile || normalized.sourceFile || '',
+      before ? JSON.stringify(normalizeTransitionRow(before)) : null,
+      JSON.stringify(normalized),
+    );
+  return info.lastInsertRowid;
 }
 
-function recentTransitionChangeLogs(limit = 60) {
-  return db.prepare('SELECT * FROM transition_change_logs ORDER BY id DESC LIMIT ?').all(limit).map((row) => ({
+function mapTransitionChangeLog(row, user = null, access = null) {
+  if (!row) return null;
+  const mapped = {
     id: row.id,
     batchId: row.batch_id,
     identityKey: row.identity_key,
@@ -2082,7 +2181,120 @@ function recentTransitionChangeLogs(limit = 60) {
     changedAt: row.changed_at,
     sourceFile: row.source_file,
     diff: J(row.diff_json, []),
-  }));
+    undone: Number(row.undone) === 1 ? 1 : 0,
+    undoOf: row.undo_of ?? null,
+    undoneBy: row.undone_by || null,
+    undoneAt: row.undone_at || null,
+    hasSnapshot: Boolean(row.before_json) || row.action === 'add',
+  };
+  if (user) {
+    const canWriteRow = (r) => canWriteTransitionRow(access || formAccess(user), user, r);
+    const gate = evaluateLogUndo(db, row, user, { canWriteRow });
+    mapped.canUndo = gate.ok;
+    mapped.undoBlockReason = gate.ok ? '' : gate.reason;
+  }
+  return mapped;
+}
+
+function recentTransitionChangeLogs(limit = 60, user = null, access = null) {
+  return db.prepare('SELECT * FROM transition_change_logs ORDER BY id DESC LIMIT ?').all(limit)
+    .map((row) => mapTransitionChangeLog(row, user, access));
+}
+
+function markLogUndone(logId, actor, at) {
+  db.prepare(`UPDATE transition_change_logs SET undone=1, undone_by=?, undone_at=? WHERE id=?`)
+    .run(actor, at, logId);
+}
+
+function insertUndoTrace({ ofLog, actor, at, note = '' }) {
+  const after = ofLog.after_json ? J(ofLog.after_json, {}) : {};
+  const before = ofLog.before_json ? J(ofLog.before_json, null) : null;
+  const row = normalizeTransitionRow(after.name || after.id ? after : {
+    name: ofLog.project_name,
+    projectType: ofLog.project_type,
+    id: ofLog.identity_key,
+  });
+  const diff = ofLog.action === 'add'
+    ? [{ code: '_row', field: '整行', before: ofLog.project_name || '', after: '（已删除）' }]
+    : transitionDiff(after, before || {});
+  db.prepare(`INSERT INTO transition_change_logs
+    (batch_id,identity_key,project_type,project_name,action,changed_by,changed_at,diff_json,source_file,before_json,after_json,undone,undo_of)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)`)
+    .run(
+      ofLog.batch_id,
+      ofLog.identity_key,
+      ofLog.project_type,
+      ofLog.project_name,
+      'undo',
+      actor,
+      at,
+      JSON.stringify(diff.length ? diff : [{ code: '_undo', field: '撤回', before: ofLog.action, after: note || '已撤回' }]),
+      ofLog.source_file || '',
+      ofLog.after_json || null,
+      ofLog.before_json || null,
+      ofLog.id,
+    );
+}
+
+function deleteTransitionRecordByIdentity(identityKey) {
+  db.prepare('DELETE FROM transition_records WHERE identity_key=?').run(identityKey);
+}
+
+function syncTransitionKv() {
+  db.prepare('INSERT INTO kv (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+    .run(transitionKey, JSON.stringify(getTransitionRows()));
+}
+
+function undoSingleChangeLog(logId, user, actor) {
+  const log = db.prepare('SELECT * FROM transition_change_logs WHERE id=?').get(logId);
+  const access = formAccess(user);
+  const canWriteRow = (r) => canWriteTransitionRow(access, user, r);
+  const gate = evaluateLogUndo(db, log, user, { canWriteRow });
+  if (!gate.ok) throw new Error(gate.reason);
+  const at = NOW();
+  db.transaction(() => {
+    applyLogRollback(db, log, {
+      upsertRow: (row, batchId) => upsertTransitionRecord(row, batchId),
+      deleteByIdentity: deleteTransitionRecordByIdentity,
+    });
+    markLogUndone(log.id, actor, at);
+    insertUndoTrace({ ofLog: log, actor, at });
+    syncTransitionKv();
+  })();
+  return mapTransitionChangeLog(db.prepare('SELECT * FROM transition_change_logs WHERE id=?').get(logId), user, access);
+}
+
+function undoImportBatch(batchId, user, actor) {
+  const batch = db.prepare('SELECT * FROM transition_import_batches WHERE id=?').get(batchId);
+  const access = formAccess(user);
+  const canWriteRow = (r) => canWriteTransitionRow(access, user, r);
+  const gate = evaluateBatchUndo(db, batch, user, { canWriteRow });
+  if (!gate.ok) throw new Error(gate.reason);
+  const at = NOW();
+  const logs = gate.logs || [];
+
+  db.transaction(() => {
+    if (batch.mode === 'replace') {
+      restoreTransitionRecordsFromBackup(db, gate.backupPath, (row, bId) => upsertTransitionRecord(row, bId));
+      for (const log of logs) {
+        markLogUndone(log.id, actor, at);
+        insertUndoTrace({ ofLog: log, actor, at, note: '整表替换撤回' });
+      }
+    } else {
+      // 按 id 从新到旧回滚
+      for (const log of logs) {
+        applyLogRollback(db, log, {
+          upsertRow: (row, bId) => upsertTransitionRecord(row, bId),
+          deleteByIdentity: deleteTransitionRecordByIdentity,
+        });
+        markLogUndone(log.id, actor, at);
+        insertUndoTrace({ ofLog: log, actor, at });
+      }
+    }
+    db.prepare("UPDATE transition_import_batches SET status='已撤回' WHERE id=?").run(batch.id);
+    syncTransitionKv();
+  })();
+  return getTransitionBatch(batch.id, false);
 }
 
 function filterTransitionRows(rows, query = {}) {
@@ -2276,7 +2488,7 @@ function createTransitionBatch({ uploadId, fileName, mode, userName, parsed }) {
   return getTransitionBatch(batchId, true);
 }
 
-function mapTransitionBatch(row, withRows = false) {
+function mapTransitionBatch(row, withRows = false, user = null, access = null) {
   if (!row) return null;
   const batch = {
     ...row,
@@ -2299,11 +2511,17 @@ function mapTransitionBatch(row, withRows = false) {
       issue: x.issue || '',
     }));
   }
+  if (user) {
+    const canWriteRow = (r) => canWriteTransitionRow(access || formAccess(user), user, r);
+    const gate = evaluateBatchUndo(db, row, user, { canWriteRow });
+    batch.canUndo = gate.ok;
+    batch.undoBlockReason = gate.ok ? '' : gate.reason;
+  }
   return batch;
 }
 
-function getTransitionBatch(id, withRows = false) {
-  return mapTransitionBatch(db.prepare('SELECT * FROM transition_import_batches WHERE id=?').get(id), withRows);
+function getTransitionBatch(id, withRows = false, user = null, access = null) {
+  return mapTransitionBatch(db.prepare('SELECT * FROM transition_import_batches WHERE id=?').get(id), withRows, user, access);
 }
 
 function batchBelongsToUser(batch, user, access) {
@@ -2317,10 +2535,10 @@ function recentTransitionBatches(user = null, access = null) {
   return rows
     .filter((batch) => !user || batchBelongsToUser(batch, user, access))
     .slice(0, 8)
-    .map((x) => mapTransitionBatch(x));
+    .map((x) => mapTransitionBatch(x, false, user, access));
 }
 
-function confirmTransitionBatch(batchId, userName, { forceDespiteIssues = false } = {}) {
+function confirmTransitionBatch(batchId, userName, { forceDespiteIssues = false, backupFile = null } = {}) {
   const batch = db.prepare('SELECT * FROM transition_import_batches WHERE id=?').get(batchId);
   if (!batch) throw new Error('导入批次不存在');
   if (!['待确认', '待修正'].includes(batch.status)) {
@@ -2371,8 +2589,8 @@ function confirmTransitionBatch(batchId, userName, { forceDespiteIssues = false 
         });
       }
     }
-    db.prepare("UPDATE transition_import_batches SET status='已入库', confirmed_by=?, confirmed_at=? WHERE id=?")
-      .run(userName, TODAY(), batch.id);
+    db.prepare("UPDATE transition_import_batches SET status='已入库', confirmed_by=?, confirmed_at=?, backup_file=COALESCE(?, backup_file) WHERE id=?")
+      .run(userName, TODAY(), backupFile || null, batch.id);
     db.prepare('INSERT INTO kv (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
       .run(transitionKey, JSON.stringify(getTransitionRows()));
   })();
@@ -2380,12 +2598,19 @@ function confirmTransitionBatch(batchId, userName, { forceDespiteIssues = false 
 }
 
 function transitionTemplatePath() {
-  const candidates = [
-    join(__dirname, '..', 'templates', TRANSITION_TEMPLATE_FILE),
-    join(__dirname, '..', 'data', 'templates', TRANSITION_TEMPLATE_FILE),
-    join(__dirname, '..', '..', '..', '需求跟进材料', TRANSITION_TEMPLATE_FILE),
+  const names = [TRANSITION_TEMPLATE_FILE, TRANSITION_TEMPLATE_FILE_LEGACY];
+  const dirs = [
+    join(__dirname, '..', 'templates'),
+    join(__dirname, '..', 'data', 'templates'),
+    join(__dirname, '..', '..', '..', '需求跟进材料'),
   ];
-  return candidates.find((p) => existsSync(p)) || null;
+  for (const name of names) {
+    for (const dir of dirs) {
+      const p = join(dir, name);
+      if (existsSync(p)) return p;
+    }
+  }
+  return null;
 }
 
 function transitionTemplateDictionaries() {
@@ -2610,9 +2835,14 @@ function nextSheetId(workbookXml) {
 }
 
 async function makeTransitionTemplateWorkbook(rows) {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, makeTransitionSheet(rows, '预先研究项目信息'), '预先研究项目信息');
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const fields = ledgerTransitionFields();
+  return buildStyledTransitionWorkbookBuffer(
+    rows,
+    '预先研究项目信息',
+    fields,
+    normalizeTransitionRow,
+    buildTransitionHeaderMatrix,
+  );
 }
 
 function makeTransitionValidationWorkbook(rows, batches = [], changeLogs = recentTransitionChangeLogs(500)) {
@@ -2788,7 +3018,8 @@ function parseTransitionWorkbook(storedPath, sourceFile, userName) {
     }
     const sheetRows = [];
     const subHeaderLine = aoa[headerIndex + 1] || [];
-    const { map: columnMap, missing } = buildTransitionHeaderMap(aoa[headerIndex] || [], subHeaderLine);
+    const groupHeaderLine = headerIndex > 0 ? (aoa[headerIndex - 1] || []) : [];
+    const { map: columnMap, missing } = buildTransitionHeaderMap(aoa[headerIndex] || [], subHeaderLine, groupHeaderLine);
     if (missing.length) {
       issues.push({ sheet: sheetName, row: headerIndex + 1, issue: `表头缺少必要字段：${missing.join('、')}；该工作表已拒绝导入` });
       continue;
@@ -2863,9 +3094,7 @@ function mergeTransitionRows(existingRows, incomingRows, userName, mode = 'merge
 }
 
 function exportTransitionValue(row, field) {
-  const value = normalizeTransitionRow(row)[field.code];
-  if (field.number) return value == null || value === '' ? '' : Number(value);
-  return cellRawText(value);
+  return exportTransitionFieldValue(row, field, normalizeTransitionRow) ?? '';
 }
 
 /** 按图示生成三级表头：顶层分组 / 中组 / 叶子；总经费为顶层竖向合并独立列 */
@@ -2963,7 +3192,7 @@ r.get('/transition-tool', (req, res) => {
     };
   });
   const invalid = enriched.filter((x) => !x.validation.ok).length;
-  let changeLogs = recentTransitionChangeLogs(40);
+  let changeLogs = recentTransitionChangeLogs(40, user, access);
   if (access.viewScope === 'owned_types' && access.ownedTypes?.length) {
     changeLogs = changeLogs.filter((x) => access.ownedTypes.includes(x.projectType));
   }
@@ -3041,7 +3270,10 @@ r.post('/transition-tool/records', (req, res) => {
   const validation = validateTransitionRow(next);
   if (!validation.ok) return res.status(400).json({ error: validation.missing.concat(validation.warnings).join('；') });
   const identity = transitionIdentity(next);
-  const beforeRaw = identity ? db.prepare('SELECT row_json FROM transition_records WHERE identity_key=?').get(identity) : null;
+  let beforeRaw = identity ? db.prepare('SELECT row_json, identity_key FROM transition_records WHERE identity_key=?').get(identity) : null;
+  if (!beforeRaw && next.id) {
+    beforeRaw = db.prepare('SELECT row_json, identity_key FROM transition_records WHERE id=?').get(next.id);
+  }
   const before = beforeRaw ? J(beforeRaw.row_json, null) : null;
   if (before && !canWriteTransitionRow(ctx.access, user, before)) {
     return res.status(403).json({ error: '无权覆盖他人负责范围内的记录' });
@@ -3123,7 +3355,7 @@ r.post('/transition-tool/import-upload', (req, res) => {
 r.get('/transition-tool/import-batches/:id', (req, res) => {
   const user = currentUser(req);
   const access = formAccess(user);
-  const batch = getTransitionBatch(Number(req.params.id), true);
+  const batch = getTransitionBatch(Number(req.params.id), true, user, access);
   if (!batch) return res.status(404).json({ error: '导入批次不存在' });
   if (!batchBelongsToUser(batch, user, access)) return res.status(403).json({ error: '无权查看其他人员的导入批次' });
   res.json({ batch });
@@ -3164,7 +3396,10 @@ r.post('/transition-tool/import-batches/:id/confirm', async (req, res) => {
     if (backup?.error) {
       return res.status(500).json({ error: `确认入库前备份失败，已中止入库：${backup.error}` });
     }
-    const batch = confirmTransitionBatch(Number(req.params.id), actor, { forceDespiteIssues });
+    const batch = confirmTransitionBatch(Number(req.params.id), actor, {
+      forceDespiteIssues,
+      backupFile: backup?.file || null,
+    });
     audit(actor, '表单维护', '确认入库', `工号 ${operatorNo} · ${batch.file_name}：新增 ${batch.added_count} 行，更新 ${batch.updated_count} 行${forceDespiteIssues ? '（含人工确认问题行）' : ''}；备份 ${backup.file}`);
     res.json({ ok: true, batch, backup });
   } catch (err) {
@@ -3183,6 +3418,46 @@ r.post('/transition-tool/import-batches/:id/cancel', (req, res) => {
   db.prepare("UPDATE transition_import_batches SET status='已取消', confirmed_by=?, confirmed_at=? WHERE id=?").run(user.name, TODAY(), batch.id);
   audit(user.name, '表单维护', '取消导入', batch.file_name, '上传预校验批次未入库，已取消');
   res.json({ ok: true });
+});
+
+/** 撤回单条在线变更 */
+r.post('/transition-tool/change-logs/:id/undo', async (req, res) => {
+  const ctx = ensureTransitionWriter(req, res);
+  if (!ctx) return;
+  const { user } = ctx;
+  const operatorNo = requireOperatorNo(req, res, user);
+  if (!operatorNo) return;
+  const actor = formatOperatorActor(user.name, operatorNo);
+  try {
+    const log = undoSingleChangeLog(Number(req.params.id), user, actor);
+    const backup = await safeBackup('undo-log', actor);
+    audit(actor, '表单维护', '撤回变更', `工号 ${operatorNo} · log#${req.params.id} · ${log.projectName || log.identityKey}`);
+    res.json({ ok: true, log, backup: backup?.error ? null : backup });
+  } catch (err) {
+    const msg = String(err.message || err);
+    const status = /无权|仅可撤回|本人/.test(msg) ? 403 : 400;
+    res.status(status).json({ error: msg });
+  }
+});
+
+/** 撤回已入库导入批次 */
+r.post('/transition-tool/import-batches/:id/undo', async (req, res) => {
+  const ctx = ensureTransitionWriter(req, res);
+  if (!ctx) return;
+  const { user } = ctx;
+  const operatorNo = requireOperatorNo(req, res, user);
+  if (!operatorNo) return;
+  const actor = formatOperatorActor(user.name, operatorNo);
+  try {
+    const batch = undoImportBatch(Number(req.params.id), user, actor);
+    const backup = await safeBackup('undo-batch', actor);
+    audit(actor, '表单维护', '撤回入库', `工号 ${operatorNo} · 批次#${req.params.id} · ${batch.file_name}`);
+    res.json({ ok: true, batch, backup: backup?.error ? null : backup });
+  } catch (err) {
+    const msg = String(err.message || err);
+    const status = /无权|仅可撤回|本人|总部/.test(msg) ? 403 : 400;
+    res.status(status).json({ error: msg });
+  }
 });
 
 r.post('/transition-tool/type-owners', (req, res) => {
@@ -3662,7 +3937,7 @@ r.get('/admin', (req, res) => {
   const user = currentUser(req);
   if (user?.role !== 'admin') return res.status(403).json({ error: '仅系统超级管理员可访问配置中心' });
   const channels = db.prepare('SELECT * FROM channels').all().map((c) => ({ ...c, flow: J(c.flow_json, []), declare: J(c.declare_json, []), filing: J(c.filing_json, []), chain: J(c.approve_chain_json, []), assess: J(c.assess_json, []) }));
-  const users = db.prepare('SELECT * FROM users').all();
+  const users = db.prepare('SELECT * FROM users').all().map(publicUser);
   const units = db.prepare('SELECT id,name,short,kind FROM units ORDER BY id').all();
   const auditRows = db.prepare('SELECT * FROM audit ORDER BY ts DESC LIMIT 100').all();
   res.json({ channels, users, units, audit: auditRows });
@@ -3774,12 +4049,12 @@ r.post('/admin/users', (req, res) => {
   if (db.prepare('SELECT id FROM users WHERE id=?').get(id)) {
     return res.status(400).json({ error: `账号 ${id} 已存在` });
   }
-  db.prepare(`INSERT INTO users (id,name,role,scope,unit_id,title,status,emp_no)
-    VALUES (?,?,?,?,?,?,?,?)`)
-    .run(id, payload.name, payload.role, payload.scope, payload.unit_id, payload.title || `${payload.name}`, payload.status, payload.emp_no);
+  db.prepare(`INSERT INTO users (id,name,role,scope,unit_id,title,status,emp_no,password_hash,must_change_password)
+    VALUES (?,?,?,?,?,?,?,?,?,1)`)
+    .run(id, payload.name, payload.role, payload.scope, payload.unit_id, payload.title || `${payload.name}`, payload.status, payload.emp_no, hashPassword(payload.emp_no));
   audit(user.name, '人员管理', payload.name, `新增账号 ${id} · 角色 ${payload.role} · 范围 ${payload.scope} · 工号 ${payload.emp_no}`);
   const created = db.prepare('SELECT * FROM users WHERE id=?').get(id);
-  res.json({ ok: true, user: created });
+  res.json({ ok: true, user: publicUser(created) });
 });
 
 /** 编辑人员账号（角色/范围/权限字段） */
@@ -3810,7 +4085,7 @@ r.put('/admin/users/:id', (req, res) => {
     );
   audit(user.name, '人员管理', payload.name, `编辑账号 ${target.id} · 角色 ${payload.role} · 范围 ${payload.scope} · 状态 ${payload.status}`);
   const updated = db.prepare('SELECT * FROM users WHERE id=?').get(target.id);
-  res.json({ ok: true, user: updated });
+  res.json({ ok: true, user: publicUser(updated) });
 });
 
 /** 删除人员账号 */

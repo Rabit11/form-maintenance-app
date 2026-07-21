@@ -19,6 +19,13 @@ export function exportTimestamp(date = new Date()) {
 export function parseYearMonth(value) {
   const text = String(value ?? '').trim();
   if (!text) return null;
+  // 样例并集：允许仅填年份（按该年 1 月计）
+  const yearOnly = text.match(/^(\d{4})年?$/);
+  if (yearOnly) {
+    const year = Number(yearOnly[1]);
+    if (year < 1900 || year > 2200) return null;
+    return year * 12;
+  }
   const match = text.match(/^(\d{4})[.\-/年](\d{1,2})(?:月)?$/);
   if (!match) return null;
   const year = Number(match[1]);

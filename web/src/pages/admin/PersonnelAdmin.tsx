@@ -130,7 +130,7 @@ export default function PersonnelAdmin() {
             人员权限管理
           </div>
           <div className="text-[11.5px] text-faint mt-0.5 max-w-[760px]">
-            系统超级管理员负责人员添加、删除、角色与权限范围编辑；初始密码与六位工号相同。
+            系统超级管理员负责人员添加、删除、角色与权限范围编辑；初始密码与六位工号相同，首次登录须改密。
           </div>
         </div>
         <Btn variant="primary" onClick={openCreate}><Plus size={14} />添加人员</Btn>

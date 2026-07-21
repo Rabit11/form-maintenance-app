@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { CheckCircle2, Download, FileSpreadsheet, Filter, Save, Search, UploadCloud, Users, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Columns3, Download, FileSpreadsheet, Filter, RotateCcw, Save, Search, UploadCloud, Users, XCircle } from 'lucide-react'
 import { api, apiDownload, apiUpload } from '../../api/client'
-import type { TransitionCascade, TransitionImportBatch, TransitionRow, TransitionToolData } from '../../api/types'
+import type { TransitionCascade, TransitionChangeLog, TransitionImportBatch, TransitionRow, TransitionToolData } from '../../api/types'
 import { Btn, Card, Empty, Field, Input, KPI, Modal, Select, Tag, Textarea, useToast } from '../../components/ui'
 import { wan } from '../../lib/format'
 import { flattenCascadePaths, resolveCascade, resolveOrgOfficeFromCascade } from '../../lib/cascadePath'
@@ -11,11 +11,11 @@ import { useSession } from '../../store/session'
 
 const LEVELS = ['国家级', '地方级', '公司级']
 const OPERATOR_NO_KEY = 'form.operatorNo'
+const HIDDEN_COLS_KEY = 'form.hiddenLedgerColumns'
 const DEFAULT_RAIL_DESIGN = {
   autoLedger: ['总表统一汇聚', '按权限自动筛选', '变更记录全程留痕'],
   formMaintenance: ['总表批量预校验', '分表增量预校验', '确认后统一入库'],
 }
-const DEFAULT_PENDING: string[] = []
 
 function fundingRelation(row: Pick<TransitionRow, 'totalBudget' | 'centralGrant' | 'selfFund' | 'internalGrant' | 'internalSelfFund'>) {
   const amount = (value: unknown) => value == null || value === '' ? null : Number(value)
@@ -321,7 +321,16 @@ export default function TransitionTool() {
   const [budgetMin, setBudgetMin] = useState('')
   const [budgetMax, setBudgetMax] = useState('')
   const [transformStatus, setTransformStatus] = useState('')
-  const [visibleGroups, setVisibleGroups] = useState<string[]>([])
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(HIDDEN_COLS_KEY) || '[]')
+      return Array.isArray(raw) ? raw.map(String) : []
+    } catch {
+      return []
+    }
+  })
+  const [colCfgOpen, setColCfgOpen] = useState(false)
+  const colCfgRef = useRef<HTMLDivElement | null>(null)
   const [colFilters, setColFilters] = useState<Record<string, string[]>>({})
   const [edit, setEdit] = useState<TransitionRow | null>(null)
   const [editResultItems, setEditResultItems] = useState<ResultItem[]>([])
@@ -332,6 +341,14 @@ export default function TransitionTool() {
   const [reviewedBatchIds, setReviewedBatchIds] = useState<Set<number>>(new Set())
   const [forceImportIds, setForceImportIds] = useState<Set<number>>(new Set())
   const [importShowProblemsOnly, setImportShowProblemsOnly] = useState(true)
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
+  const [showAccessDetail, setShowAccessDetail] = useState(false)
+  const [showUploadGuide, setShowUploadGuide] = useState(false)
+  const [undoTarget, setUndoTarget] = useState<
+    | { kind: 'log'; log: TransitionChangeLog }
+    | { kind: 'batch'; batch: TransitionImportBatch }
+    | null
+  >(null)
   const [operatorNo, setOperatorNo] = useState(() => {
     const fromUser = normalizeOperatorNo(user?.emp_no || '')
     return fromUser || localStorage.getItem(OPERATOR_NO_KEY) || ''
@@ -358,6 +375,19 @@ export default function TransitionTool() {
     if (normalized) localStorage.setItem(OPERATOR_NO_KEY, normalized)
     else localStorage.removeItem(OPERATOR_NO_KEY)
   }, [operatorNo])
+
+  useEffect(() => {
+    localStorage.setItem(HIDDEN_COLS_KEY, JSON.stringify(hiddenCols))
+  }, [hiddenCols])
+
+  useEffect(() => {
+    if (!colCfgOpen) return
+    const onDoc = (e: MouseEvent) => {
+      if (colCfgRef.current && !colCfgRef.current.contains(e.target as Node)) setColCfgOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [colCfgOpen])
 
   const requireOperatorNo = () => {
     const no = normalizeOperatorNo(operatorNo)
@@ -402,7 +432,7 @@ export default function TransitionTool() {
       }
       if (kw.trim()) {
         const needle = kw.trim().toLowerCase()
-        const hay = [r.serial, r.code, r.name, r.projectType, r.sourceChannel, r.orgOffice, r.responsibleUnit, r.demandUnit].join(' ').toLowerCase()
+        const hay = [r.serial, r.code, r.name, r.projectType, r.sourceChannel, r.orgOffice, r.center, r.responsibleUnit, r.demandUnit].join(' ').toLowerCase()
         if (!hay.includes(needle)) return false
       }
       return true
@@ -522,12 +552,18 @@ export default function TransitionTool() {
     if (visibleFieldGroups?.length) return groups.filter((g) => visibleFieldGroups.includes(g))
     return groups
   }, [excelFields, visibleFieldGroups])
+  const configurableFields = useMemo(() => {
+    if (visibleFieldGroups?.length) return excelFields.filter((field) => visibleFieldGroups.includes(field.group))
+    return excelFields
+  }, [excelFields, visibleFieldGroups])
   const tableFields = useMemo(() => {
-    let fields = excelFields
-    if (visibleFieldGroups?.length) fields = fields.filter((field) => visibleFieldGroups.includes(field.group))
-    if (!visibleGroups.length) return fields
-    return fields.filter((field) => visibleGroups.includes(field.group))
-  }, [excelFields, visibleGroups, visibleFieldGroups])
+    const hidden = new Set(hiddenCols)
+    return configurableFields.filter((field) => !hidden.has(field.code))
+  }, [configurableFields, hiddenCols])
+  const hiddenColCount = useMemo(
+    () => configurableFields.filter((f) => hiddenCols.includes(f.code)).length,
+    [configurableFields, hiddenCols],
+  )
   const excelHeader = useMemo(() => {
     type Cell = { key: string; label: string; colSpan?: number; rowSpan?: number; field?: TransitionFieldMeta; colIndex?: number; className?: string }
     const top: Cell[] = []
@@ -569,7 +605,15 @@ export default function TransitionTool() {
     }
     return { top, mid, leaf }
   }, [tableFields])
-  const latestBatch = useMemo(() => data?.batches[0] || null, [data])
+  const pendingBatches = useMemo(
+    () => (data?.batches || []).filter((b) => ['待确认', '待修正'].includes(b.status)),
+    [data],
+  )
+  const advancedFilterCount = useMemo(() => (
+    [office, acceptanceStatus, transformStatus, color, startFrom, endTo, budgetMin, budgetMax]
+      .filter((x) => String(x || '').trim()).length
+  ), [office, acceptanceStatus, transformStatus, color, startFrom, endTo, budgetMin, budgetMax])
+  const accessTone = access?.mode === 'hq' ? 'accent' : access?.mode === 'channel' ? 'yellow' : (access?.mode === 'owner' || access?.mode === 'unit') ? 'green' : 'dim' as const
   const currentTypeCount = useMemo(() => {
     const set = new Set(rows.map((r) => r.projectType || r.sourceSheet).filter(Boolean))
     return set.size
@@ -707,7 +751,7 @@ export default function TransitionTool() {
     if (access?.mode === 'channel') return ownedLevels.includes(row.level)
     if (access?.mode === 'unit') {
       const names = access.ownedUnitNames || []
-      const text = `${row.responsibleUnit || ''} ${row.demandUnit || ''}`
+      const text = `${row.responsibleUnit || ''} ${row.demandUnit || ''} ${row.center || ''}`
       return names.some((n) => text.includes(n))
     }
     return false
@@ -801,16 +845,6 @@ export default function TransitionTool() {
       sourceType: r.next.projectType,
       sourceSheet: r.next.projectType,
     })
-  }
-
-  const importDemo = async () => {
-    setBusy(true)
-    try {
-      const r = await api.post<{ imported: number }>('/transition-tool/import-demo')
-      toast(`已加载全面样本案例 ${r.imported} 行（覆盖国家/地方/公司级联与专业）`)
-      setActiveTab('master')
-      load()
-    } catch (e) { toast((e as Error).message, 'err') } finally { setBusy(false) }
   }
 
   const pickFiles = (mode: UploadMode) => {
@@ -913,6 +947,30 @@ export default function TransitionTool() {
     } catch (e) { toast((e as Error).message, 'err') } finally { setBusy(false) }
   }
 
+  const submitUndo = async () => {
+    if (!undoTarget) return
+    const no = requireOperatorNo()
+    if (!no) return
+    setBusy(true)
+    try {
+      if (undoTarget.kind === 'log') {
+        await api.post(`/transition-tool/change-logs/${undoTarget.log.id}/undo`, { operatorNo: no })
+        toast(`已撤回变更：${undoTarget.log.projectName || undoTarget.log.identityKey}`)
+      } else {
+        await api.post(`/transition-tool/import-batches/${undoTarget.batch.id}/undo`, { operatorNo: no })
+        toast(`已撤回入库批次：${undoTarget.batch.file_name}`)
+        setPreviewBatches((old) => old.filter((x) => x.id !== undoTarget.batch.id))
+        if (activeBatchId === undoTarget.batch.id) setActiveBatchId(null)
+      }
+      setUndoTarget(null)
+      load()
+    } catch (e) {
+      toast((e as Error).message, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const save = async () => {
     if (!edit) return
     const packed = serializeResultItems(editResultItems)
@@ -934,12 +992,20 @@ export default function TransitionTool() {
     } catch (e) { toast((e as Error).message, 'err') } finally { setBusy(false) }
   }
 
-  const toggleGroup = (group: string) => {
-    setVisibleGroups((old) => (
-      old.includes(group)
-        ? old.filter((x) => x !== group)
-        : [...old, group]
-    ))
+  const toggleColumn = (code: string) => {
+    setHiddenCols((old) => (old.includes(code) ? old.filter((x) => x !== code) : [...old, code]))
+  }
+
+  const setGroupColumnsVisible = (group: string, visible: boolean) => {
+    const codes = configurableFields.filter((f) => f.group === group).map((f) => f.code)
+    setHiddenCols((old) => {
+      const set = new Set(old)
+      for (const code of codes) {
+        if (visible) set.delete(code)
+        else set.add(code)
+      }
+      return [...set]
+    })
   }
 
   const download = async (path: string, name: string) => {
@@ -963,37 +1029,68 @@ export default function TransitionTool() {
     : projectTypeOptions
 
   return (
-    <div className="flex flex-col gap-4 fade-up">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <div className="text-[13px] font-semibold">表单维护</div>
-          <div className="text-[11.5px] text-faint mt-0.5 max-w-[720px]">
+    <div className="flex flex-col gap-3 fade-up">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[14px] font-semibold tracking-wide">表单维护</div>
+          <div className="text-[11.5px] text-faint mt-0.5 max-w-[640px] truncate">
             {access?.maintObject
-              ? `维护对象：${access.maintObject}。查看：${access.rights?.read || '—'}；修改：${access.rights?.write || '—'}；导出：${access.rights?.export || '—'}。`
+              ? `维护对象：${access.maintObject}`
               : isOwnerMode
-                ? `您是项目类型主管，当前仅可维护：${ownedTypes.join('、') || '（尚未授权类型）'}。`
-                : '各角色权限按 V19 落地：总部维护总表，项目类型主管维护分表，其余角色只读。'}
+                ? `项目类型主管 · ${ownedTypes.join('、') || '尚未授权类型'}`
+                : '总部维护总表 · 主管维护分表 · 其余角色只读'}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          <Tag tone={access?.mode === 'hq' ? 'accent' : access?.mode === 'channel' ? 'yellow' : (access?.mode === 'owner' || access?.mode === 'unit') ? 'green' : 'dim'}>{access?.label || '未识别权限'}</Tag>
-          {access?.roleLabel && <Tag tone="dim">{access.roleLabel}</Tag>}
+          <Tag tone={accessTone}>{access?.label || '未识别权限'}</Tag>
           {!canWrite && <Tag tone="yellow">只读</Tag>}
-          {canWrite && access?.mode === 'hq' && <Tag tone="green">可改全部</Tag>}
-          {canWrite && isChannelMode && <Tag tone="yellow">本层级渠道可写</Tag>}
-          {canWrite && isUnitMode && <Tag tone="green">本单位可写</Tag>}
-          {canWrite && isOwnerMode && <Tag tone="green">本人分表可写</Tag>}
-          {isChannelMode && ownedLevels.length > 0 && <Tag tone="dim">层级 {ownedLevels.join('、')}</Tag>}
-          {canExport ? <Tag tone="accent">可导出</Tag> : <Tag tone="dim">禁导出</Tag>}
+          <button type="button" className="chip text-[11px] inline-flex items-center gap-1" onClick={() => setShowAccessDetail((v) => !v)}>
+            权限说明
+            <ChevronDown size={12} className={`transition-transform ${showAccessDetail ? 'rotate-180' : ''}`} />
+          </button>
         </div>
       </div>
+      {showAccessDetail && (
+        <div className="rounded-lg border border-line2 bg-[rgba(17,26,46,0.55)] px-3.5 py-2.5 text-[11.5px] text-dim flex flex-wrap gap-x-4 gap-y-1.5">
+          <span>查看：{access?.rights?.read || '—'}</span>
+          <span>修改：{access?.rights?.write || '—'}</span>
+          <span>导出：{access?.rights?.export || '—'}</span>
+          {access?.roleLabel && <span>角色：{access.roleLabel}</span>}
+          {isChannelMode && ownedLevels.length > 0 && <span>层级：{ownedLevels.join('、')}</span>}
+          {canExport ? <span className="text-accent">可导出</span> : <span>禁导出</span>}
+        </div>
+      )}
 
-      <Card pad className="!p-3.5">
+      <input ref={uploadRef} type="file" accept=".xlsx,.xls" multiple className="hidden" onChange={(e) => importFiles(e.target.files)} />
+
+      <Card pad className="!p-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] text-faint shrink-0">操作</span>
+          <div className="h-4 w-px bg-[rgba(148,163,184,0.2)] shrink-0" />
+          {canImportMaster && <Btn disabled={busy} onClick={() => pickFiles('replace')}><UploadCloud size={14} />上传总表</Btn>}
+          {canWrite && <Btn disabled={busy} onClick={() => pickFiles('merge')}><UploadCloud size={14} />上传分表</Btn>}
+          {canExport ? (
+            <Btn variant="primary" disabled={busy} title={`按当前筛选导出：${exportLabel}`} onClick={() => download(`/transition-tool/export.xlsx${exportQuery}`, exportExcelName)}>
+              <Download size={14} />导出 Excel
+            </Btn>
+          ) : (
+            <Tag tone="dim">无导出权限</Tag>
+          )}
+          {canExportAll && (
+            <Btn disabled={busy} title={projectType ? `仅打包「${projectType}」专项分表` : `打包当前筛选下各专项分表：${exportLabel}`} onClick={() => download(`/transition-tool/export-package.zip${exportQuery}`, exportZipName)}>
+              <Download size={14} />{projectType ? '导出分表包' : '导出筛选包'}
+            </Btn>
+          )}
+        </div>
+      </Card>
+
+      <Card pad className="!p-3">
         <div className="flex items-center gap-2.5 flex-wrap">
-          <input ref={uploadRef} type="file" accept=".xlsx,.xls" multiple className="hidden" onChange={(e) => importFiles(e.target.files)} />
+          <span className="text-[11px] text-faint shrink-0">筛选</span>
+          <div className="h-4 w-px bg-[rgba(148,163,184,0.2)] shrink-0" />
           <div className="relative">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
-            <Input aria-label="搜索" placeholder="序号 / 项目名称 / 编号" value={kw} onChange={(e) => setKw(e.target.value)} style={{ width: 230, paddingLeft: 32 }} />
+            <Input aria-label="搜索" placeholder="序号 / 项目名称 / 编号" value={kw} onChange={(e) => setKw(e.target.value)} style={{ width: 210, paddingLeft: 32 }} />
           </div>
           <Select aria-label="层级" value={level} onChange={(e) => onFilterLevelChange(e.target.value)} style={{ width: 108 }}>
             <option value="">全部层级</option>
@@ -1003,65 +1100,51 @@ export default function TransitionTool() {
             <option value="">全部渠道</option>
             {sourceChannelOptions.map((x) => <option key={x}>{x}</option>)}
           </Select>
-          <Select aria-label="司局/处室" value={office} onChange={(e) => onFilterOfficeChange(e.target.value)} style={{ width: 140 }} title="筛选辅助，不写入 Excel">
-            <option value="">全部司局/处室</option>
-            {officeOptions.map((x) => <option key={x}>{x}</option>)}
-          </Select>
-          <Select aria-label="项目类型" value={projectType} onChange={(e) => onFilterTypeChange(e.target.value)} style={{ width: 200 }}>
+          <Select aria-label="项目类型" value={projectType} onChange={(e) => onFilterTypeChange(e.target.value)} style={{ width: 190 }}>
             <option value="">{isOwnerMode ? '我负责的全部类型' : '全部项目类型'}</option>
             {typeSelectOptions.map((x) => <option key={x}>{x}</option>)}
           </Select>
-          <Select aria-label="单位" value={unit} onChange={(e) => setUnit(e.target.value)} style={{ width: 150 }}>
+          <Select aria-label="单位" value={unit} onChange={(e) => setUnit(e.target.value)} style={{ width: 140 }}>
             <option value="">全部单位</option>
             {data.filterOptions.units.map((x) => <option key={x}>{x}</option>)}
           </Select>
-          <Select aria-label="状态" value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 120 }}>
+          <Select aria-label="状态" value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 112 }}>
             <option value="">全部状态</option>
             {data.filterOptions.statuses.map((x) => <option key={x}>{x}</option>)}
           </Select>
-          <Select aria-label="验收状态" value={acceptanceStatus} onChange={(e) => setAcceptanceStatus(e.target.value)} style={{ width: 130 }}>
-            <option value="">全部验收</option>
-            {data.filterOptions.acceptanceStatuses.map((x) => <option key={x}>{x}</option>)}
-          </Select>
-          <Select aria-label="成果转化状态" value={transformStatus} onChange={(e) => setTransformStatus(e.target.value)} style={{ width: 140 }}>
-            <option value="">全部成果</option>
-            {data.filterOptions.transformStatuses.map((x) => <option key={x}>{x}</option>)}
-          </Select>
-          <Select aria-label="预警" value={color} onChange={(e) => setColor(e.target.value)} style={{ width: 110 }}>
-            <option value="">全部预警</option>
-            <option value="red">红</option><option value="yellow">黄</option><option value="blue">蓝</option><option value="green">绿</option>
-          </Select>
-          <Input aria-label="开始年月不早于" placeholder="开始≥YYYY.M" value={startFrom} onChange={(e) => setStartFrom(e.target.value)} style={{ width: 118 }} />
-          <Input aria-label="结束年月不晚于" placeholder="结束≤YYYY.M" value={endTo} onChange={(e) => setEndTo(e.target.value)} style={{ width: 118 }} />
-          <Input aria-label="经费下限" placeholder="经费≥万" value={budgetMin} onChange={(e) => setBudgetMin(e.target.value)} style={{ width: 98 }} />
-          <Input aria-label="经费上限" placeholder="经费≤万" value={budgetMax} onChange={(e) => setBudgetMax(e.target.value)} style={{ width: 98 }} />
-          <div className="grow" />
-          {canImportMaster && <Btn disabled={busy} onClick={importDemo}><FileSpreadsheet size={14} />加载样本案例</Btn>}
-          {canImportMaster && <Btn disabled={busy} onClick={() => pickFiles('replace')}><UploadCloud size={14} />上传总表预校验</Btn>}
-          {canWrite && <Btn disabled={busy} onClick={() => pickFiles('merge')}><UploadCloud size={14} />上传分表预校验</Btn>}
-          {canExport ? (
-            <Btn
-              variant="primary"
-              disabled={busy}
-              title={`按当前筛选导出：${exportLabel}`}
-              onClick={() => download(`/transition-tool/export.xlsx${exportQuery}`, exportExcelName)}
-            >
-              <Download size={14} />导出 {projectType ? projectType : '当前筛选'} Excel
-            </Btn>
-          ) : (
-            <Tag tone="dim">当前角色无导出权限</Tag>
-          )}
-          {canExportAll && (
-            <Btn
-              variant="primary"
-              disabled={busy}
-              title={projectType ? `仅打包「${projectType}」专项分表` : `打包当前筛选下各专项分表：${exportLabel}`}
-              onClick={() => download(`/transition-tool/export-package.zip${exportQuery}`, exportZipName)}
-            >
-              <Download size={14} />{projectType ? `导出 ${projectType} 分表包` : '导出筛选分表包'}
-            </Btn>
-          )}
+          <button
+            type="button"
+            className={`chip inline-flex items-center gap-1 ${showAdvancedFilters || advancedFilterCount ? 'text-accent border-[rgba(56,189,248,0.35)]' : ''}`}
+            onClick={() => setShowAdvancedFilters((v) => !v)}
+          >
+            高级筛选{advancedFilterCount > 0 ? ` (${advancedFilterCount})` : ''}
+            <ChevronDown size={12} className={`transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`} />
+          </button>
         </div>
+        {showAdvancedFilters && (
+          <div className="flex items-center gap-2.5 flex-wrap mt-2.5 pt-2.5 border-t border-line">
+            <Select aria-label="司局/处室" value={office} onChange={(e) => onFilterOfficeChange(e.target.value)} style={{ width: 140 }} title="筛选辅助，不写入 Excel">
+              <option value="">全部司局/处室</option>
+              {officeOptions.map((x) => <option key={x}>{x}</option>)}
+            </Select>
+            <Select aria-label="验收状态" value={acceptanceStatus} onChange={(e) => setAcceptanceStatus(e.target.value)} style={{ width: 130 }}>
+              <option value="">全部验收</option>
+              {data.filterOptions.acceptanceStatuses.map((x) => <option key={x}>{x}</option>)}
+            </Select>
+            <Select aria-label="成果转化状态" value={transformStatus} onChange={(e) => setTransformStatus(e.target.value)} style={{ width: 140 }}>
+              <option value="">全部成果</option>
+              {data.filterOptions.transformStatuses.map((x) => <option key={x}>{x}</option>)}
+            </Select>
+            <Select aria-label="预警" value={color} onChange={(e) => setColor(e.target.value)} style={{ width: 110 }}>
+              <option value="">全部预警</option>
+              <option value="red">红</option><option value="yellow">黄</option><option value="blue">蓝</option><option value="green">绿</option>
+            </Select>
+            <Input aria-label="开始年月不早于" placeholder="开始≥YYYY.M" value={startFrom} onChange={(e) => setStartFrom(e.target.value)} style={{ width: 118 }} />
+            <Input aria-label="结束年月不晚于" placeholder="结束≤YYYY.M" value={endTo} onChange={(e) => setEndTo(e.target.value)} style={{ width: 118 }} />
+            <Input aria-label="经费下限" placeholder="经费≥万" value={budgetMin} onChange={(e) => setBudgetMin(e.target.value)} style={{ width: 98 }} />
+            <Input aria-label="经费上限" placeholder="经费≤万" value={budgetMax} onChange={(e) => setBudgetMax(e.target.value)} style={{ width: 98 }} />
+          </div>
+        )}
       </Card>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -1074,51 +1157,104 @@ export default function TransitionTool() {
             }`}
           >
             {tab.label}
+            {tab.key === 'upload' && pendingBatches.length > 0 && (
+              <span className="ml-1.5 num text-[10px] text-syellow">{pendingBatches.length}</span>
+            )}
           </button>
         ))}
       </div>
 
       {activeTab === 'master' && <Card
         title={<span className="flex items-center gap-2"><FileSpreadsheet size={15} />预先研究项目信息</span>}
-        extra={
+        extra={(
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <Tag tone="accent">项目 {filteredSummary.total} 个</Tag>
-            <Tag tone="dim">类型 {currentTypeCount} 个</Tag>
-            <Tag tone="accent">总经费 {wan(filteredSummary.budget, 1)} 万</Tag>
-            <Tag tone="dim">国拨 {wan(filteredSummary.centralGrant, 1)} 万</Tag>
-            <Tag tone="dim">自筹 {wan(filteredSummary.selfFund, 1)} 万</Tag>
-            <Tag tone="accent">执行中 {filteredSummary.executing}</Tag>
-            <Tag tone="green">已完成 {filteredSummary.completed}</Tag>
-            {filteredSummary.delayed > 0 && <Tag tone="red">延期 {filteredSummary.delayed}</Tag>}
-            <Tag tone={filteredSummary.invalid ? 'yellow' : 'green'}>{filteredSummary.invalid ? `待修正 ${filteredSummary.invalid}` : '校验通过'}</Tag>
-            {data.summary.duplicates.length > 0 && <Tag tone="yellow">重复 {data.summary.duplicates.length}</Tag>}
-            {latestBatch && <button onClick={() => openBatch(latestBatch.id)} className="chip hover:text-accent">{latestBatch.status} · {latestBatch.file_name}</button>}
+            {activeColFilterCount > 0 && (
+              <button type="button" className="chip text-accent border-[rgba(56,189,248,0.35)]" onClick={() => setColFilters({})} title="清除所有列表头筛选">
+                清除列筛选 ({activeColFilterCount})
+              </button>
+            )}
+            <div className="relative" ref={colCfgRef}>
+              <button
+                type="button"
+                className={`chip inline-flex items-center gap-1.5 ${colCfgOpen || hiddenColCount > 0 ? 'text-accent border-[rgba(56,189,248,0.35)]' : ''}`}
+                onClick={() => setColCfgOpen((v) => !v)}
+                title="配置表格显示列"
+              >
+                <Columns3 size={13} />
+                列配置
+                {hiddenColCount > 0
+                  ? <span className="num text-[10px]">已收起 {hiddenColCount}</span>
+                  : <span className="num text-[10px] text-faint">{tableFields.length} 列</span>}
+                <ChevronDown size={12} className={`transition-transform ${colCfgOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {colCfgOpen && (
+                <div className="absolute right-0 top-9 z-30 w-[360px] max-h-[420px] overflow-y-auto rounded-lg border border-line2 bg-[#0f1a2e] shadow-2xl p-3">
+                  <div className="flex items-center gap-2 mb-2.5 flex-wrap">
+                    <span className="text-[12px] font-medium grow">显示列</span>
+                    <button type="button" className="chip text-[11px]" onClick={() => setHiddenCols([])}>全部显示</button>
+                    <button
+                      type="button"
+                      className="chip text-[11px]"
+                      onClick={() => setHiddenCols(configurableFields.map((f) => f.code))}
+                    >
+                      全部收起
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-faint mb-2">勾选显示，取消勾选即收起；仅影响本页表格，导出仍按完整表头。</div>
+                  {allGroupNames.map((group) => {
+                    const groupFields = configurableFields.filter((f) => f.group === group)
+                    const shown = groupFields.filter((f) => !hiddenCols.includes(f.code)).length
+                    return (
+                      <div key={group} className="mb-3 last:mb-0">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <div className="text-[11.5px] font-semibold text-dim grow">{group}</div>
+                          <button type="button" className="text-[10.5px] text-accent cursor-pointer" onClick={() => setGroupColumnsVisible(group, true)}>全显</button>
+                          <button type="button" className="text-[10.5px] text-faint cursor-pointer" onClick={() => setGroupColumnsVisible(group, false)}>收起</button>
+                          <span className="text-[10px] text-faint num">{shown}/{groupFields.length}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {groupFields.map((field) => {
+                            const checked = !hiddenCols.includes(field.code)
+                            return (
+                              <label key={field.code} className="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-[rgba(56,189,248,0.06)] cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  className="accent-cyan-400"
+                                  checked={checked}
+                                  onChange={() => toggleColumn(field.code)}
+                                />
+                                <span className={`text-[12px] ${checked ? 'text-ink' : 'text-faint'}`}>{field.label}</span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </div>
-        }
+        )}
         pad={false}
         className="overflow-hidden"
       >
-        <div className="flex items-center gap-2 flex-wrap px-4 py-3 border-b border-line">
-          <span className="text-[11px] text-faint">自定义显示列：</span>
-          <button onClick={() => setVisibleGroups([])} className={`chip ${visibleGroups.length === 0 ? 'text-accent border-[rgba(56,189,248,0.35)]' : ''}`}>全部字段</button>
-          {allGroupNames.map((group) => (
-            <button key={group} onClick={() => toggleGroup(group)} className={`chip ${visibleGroups.includes(group) ? 'text-accent border-[rgba(56,189,248,0.35)]' : ''}`}>
-              {group}
-            </button>
-          ))}
-          {activeColFilterCount > 0 && (
-            <button
-              type="button"
-              className="chip text-accent border-[rgba(56,189,248,0.35)]"
-              onClick={() => setColFilters({})}
-              title="清除所有列表头筛选"
-            >
-              清除列筛选 ({activeColFilterCount})
-            </button>
-          )}
-          <span className="text-[11px] text-faint">表头漏斗可按列勾选筛选；导出按三级表头完整输出。</span>
+        <div className="flex items-center gap-x-4 gap-y-1.5 flex-wrap px-4 py-2.5 border-b border-line text-[12px]">
+          <span className="num text-ink"><span className="text-faint mr-1">项目</span>{filteredSummary.total}</span>
+          <span className="num text-ink"><span className="text-faint mr-1">类型</span>{currentTypeCount}</span>
+          <span className="num text-accent"><span className="text-faint mr-1">总经费</span>{wan(filteredSummary.budget, 1)} 万</span>
+          <span className="num text-dim"><span className="text-faint mr-1">国拨</span>{wan(filteredSummary.centralGrant, 1)}</span>
+          <span className="num text-dim"><span className="text-faint mr-1">自筹</span>{wan(filteredSummary.selfFund, 1)}</span>
+          <span className="text-dim">执行中 {filteredSummary.executing}</span>
+          <span className="text-sgreen">已完成 {filteredSummary.completed}</span>
+          {filteredSummary.delayed > 0 && <span className="text-sred">延期 {filteredSummary.delayed}</span>}
+          <span className={filteredSummary.invalid ? 'text-syellow' : 'text-sgreen'}>
+            {filteredSummary.invalid ? `待修正 ${filteredSummary.invalid}` : '校验通过'}
+          </span>
+          {data.summary.duplicates.length > 0 && <span className="text-syellow">重复 {data.summary.duplicates.length}</span>}
+          <span className="text-[11px] text-faint ml-auto hidden lg:inline">表头漏斗可按列筛选 · 导出完整表头</span>
         </div>
-        <div className="overflow-x-auto max-h-[calc(100vh-260px)]">
+        <div className="overflow-x-auto max-h-[calc(100vh-320px)] min-h-[360px]">
           <table className="excel-ledger-table excel-ledger-table--tier3">
             <thead>
               <tr>
@@ -1231,6 +1367,9 @@ export default function TransitionTool() {
             </tbody>
           </table>
           {rows.length === 0 && <Empty text="当前筛选条件下暂无记录" />}
+          {rows.length > 0 && tableFields.length === 0 && (
+            <Empty text="当前已收起全部列，请在「列配置」中勾选要显示的字段" />
+          )}
         </div>
       </Card>}
 
@@ -1311,45 +1450,71 @@ export default function TransitionTool() {
 
       {activeTab === 'upload' && (
         <div className="grid grid-cols-12 gap-4">
-          <Card title="五步导入闭环" className="col-span-4">
-            <div className="flex flex-col gap-2">
-              {data.workflow.map((step, i) => (
-                <div key={step} className="flex items-center gap-2 rounded-lg border border-line2 px-3 py-2">
-                  <span className="num text-accent">{i + 1}</span>
-                  <span className="text-[12.5px]">{step}</span>
+          <Card title="最近导入批次" className="col-span-12 xl:col-span-7" pad={false}>
+            <div className="px-4 py-3 border-b border-line flex items-center gap-2 flex-wrap">
+              {pendingBatches.length > 0 && <Tag tone="accent">待确认 {pendingBatches.length} 批</Tag>}
+              {!canWrite && <Tag tone="yellow">当前账号只读，不可上传</Tag>}
+              <button type="button" className="chip ml-auto inline-flex items-center gap-1" onClick={() => setShowUploadGuide((v) => !v)}>
+                导入说明
+                <ChevronDown size={12} className={`transition-transform ${showUploadGuide ? 'rotate-180' : ''}`} />
+              </button>
+            </div>
+            {showUploadGuide && (
+              <div className="px-4 py-3 border-b border-line text-[12px] text-dim space-y-1.5 bg-[rgba(17,26,46,0.4)]">
+                {(data.workflow || []).slice(0, 5).map((step, i) => (
+                  <div key={step} className="flex gap-2"><span className="num text-accent">{i + 1}</span><span>{step}</span></div>
+                ))}
+                <div className="pt-1 text-[11px] text-faint">
+                  {(data.railDesign?.formMaintenance || DEFAULT_RAIL_DESIGN.formMaintenance).join(' · ')}
+                </div>
+              </div>
+            )}
+            <div className="p-3 flex flex-col gap-2 max-h-[calc(100vh-380px)] overflow-y-auto">
+              {[...data.batches].sort((a, b) => {
+                const rank = (s: string) => (s === '待确认' || s === '待修正' ? 0 : s === '已入库' ? 1 : 2)
+                return rank(a.status) - rank(b.status) || b.id - a.id
+              }).map((b) => (
+                <div key={b.id} className="rounded-lg border border-line2 px-3 py-2.5">
+                  <button type="button" onClick={() => openBatch(b.id)}
+                    className="w-full text-left cursor-pointer hover:opacity-95">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12.5px] text-ink truncate grow">{b.file_name}</span>
+                      <Tag tone={b.status === '已入库' ? 'green' : b.status === '待确认' ? 'accent' : b.status === '待修正' ? 'yellow' : b.status === '已撤回' ? 'yellow' : 'dim'}>{b.status}</Tag>
+                    </div>
+                    <div className="text-[10.5px] text-faint mt-1">解析 {b.parsed_count} · 新增 {b.added_count} · 更新 {b.updated_count} · 问题 {b.invalid_count}</div>
+                    <div className="text-[10.5px] text-faint mt-0.5">{b.uploaded_by} · {b.uploaded_at}</div>
+                  </button>
+                  {canWrite && b.status === '已入库' && (
+                    <div className="mt-2 flex justify-end">
+                      <Btn
+                        size="sm"
+                        disabled={busy || b.canUndo === false}
+                        title={b.canUndo === false ? (b.undoBlockReason || '当前不可撤回') : '撤回本批已入库变更'}
+                        onClick={() => setUndoTarget({ kind: 'batch', batch: b })}
+                      >
+                        <RotateCcw size={12} />撤回本批
+                      </Btn>
+                    </div>
+                  )}
                 </div>
               ))}
-            </div>
-            <div className="mt-4 flex gap-2 flex-wrap">
-              {canImportMaster && <Btn disabled={busy} onClick={() => pickFiles('replace')}><UploadCloud size={14} />上传总表</Btn>}
-              {canWrite && <Btn disabled={busy} onClick={() => pickFiles('merge')}><UploadCloud size={14} />上传多个分表</Btn>}
-              {!canWrite && <Tag tone="yellow">当前账号只读，不可上传</Tag>}
+              {data.batches.length === 0 && <Empty text="暂无导入批次，请先上传 Excel" />}
             </div>
           </Card>
-          <Card title="双轨设计" className="col-span-4">
-            <div className="text-[11px] tracking-wider text-faint mb-2">自动台账</div>
-            <div className="flex flex-col gap-1.5 mb-4">
-              {(data.railDesign?.autoLedger || DEFAULT_RAIL_DESIGN.autoLedger).map((x) => <div key={x} className="text-[12px] text-dim">· {x}</div>)}
-            </div>
-            <div className="text-[11px] tracking-wider text-faint mb-2">表单工具</div>
-            <div className="flex flex-col gap-1.5">
-              {(data.railDesign?.formMaintenance || DEFAULT_RAIL_DESIGN.formMaintenance).map((x) => <div key={x} className="text-[12px] text-dim">· {x}</div>)}
-            </div>
-          </Card>
-          <Card title="最近导入批次" className="col-span-4">
-            <div className="flex flex-col gap-2">
-              {data.batches.map((b) => (
-                <button key={b.id} onClick={() => openBatch(b.id)}
-                  className="rounded-lg border border-line2 px-3 py-2 text-left cursor-pointer hover:border-[rgba(56,189,248,0.38)]">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[12px] text-ink truncate grow">{b.file_name}</span>
-                    <Tag tone={b.status === '已入库' ? 'green' : b.status === '待确认' ? 'accent' : b.status === '待修正' ? 'yellow' : 'dim'}>{b.status}</Tag>
-                  </div>
-                  <div className="text-[10.5px] text-faint mt-1">解析 {b.parsed_count} · 新增 {b.added_count} · 更新 {b.updated_count} · 问题 {b.invalid_count}</div>
-                  <div className="text-[10.5px] text-faint mt-0.5">{b.uploaded_by} · {b.uploaded_at}</div>
-                </button>
-              ))}
-              {data.batches.length === 0 && <Empty text="暂无导入批次" />}
+          <Card title="快捷说明" className="col-span-12 xl:col-span-5">
+            <div className="text-[12px] text-dim space-y-3">
+              <div>
+                <div className="text-[11px] tracking-wider text-faint mb-1.5">自动台账</div>
+                {(data.railDesign?.autoLedger || DEFAULT_RAIL_DESIGN.autoLedger).map((x) => (
+                  <div key={x} className="py-0.5">· {x}</div>
+                ))}
+              </div>
+              <div className="border-t border-line pt-3">
+                <div className="text-[11px] tracking-wider text-faint mb-1.5">操作提示</div>
+                <div className="py-0.5">· 上传后先预校验，确认无误再入库</div>
+                <div className="py-0.5">· 待确认批次会显示在上方列表顶部</div>
+                <div className="py-0.5">· 成果多行用逗号/换行即可，不会拆成多条项目</div>
+              </div>
             </div>
           </Card>
         </div>
@@ -1357,32 +1522,30 @@ export default function TransitionTool() {
 
       {activeTab === 'reports' && (
         <div className="grid grid-cols-12 gap-4">
-          <Card title="校验报告与批次记录" className="col-span-5" pad={false}>
-            <table className="dtable">
-              <thead><tr><th>批次</th><th>文件名</th><th>状态</th><th>问题</th><th>确认人</th></tr></thead>
-              <tbody>
-                {data.batches.map((b) => (
-                  <tr key={b.id} className="clickable" onClick={() => openBatch(b.id)}>
-                    <td className="num">{b.id}</td>
-                    <td className="max-w-[220px] truncate">{b.file_name}</td>
-                    <td><Tag tone={b.status === '已入库' ? 'green' : b.status === '待确认' ? 'accent' : b.status === '待修正' ? 'yellow' : 'dim'}>{b.status}</Tag></td>
-                    <td className="num">{b.invalid_count}</td>
-                    <td className="text-dim">{b.confirmed_by || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-          <Card title="字段变更明细" className="col-span-7" pad={false}>
-            <div className="overflow-x-auto max-h-[420px]">
+          <Card title="字段变更明细" className="col-span-12" pad={false}>
+            <div className="px-4 py-2 border-b border-line text-[11.5px] text-faint flex items-center gap-2 flex-wrap">
+              <span>入库批次请到「批量上传」查看与撤回</span>
+              <button type="button" className="chip text-accent border-[rgba(56,189,248,0.3)]" onClick={() => setActiveTab('upload')}>
+                前往批量上传
+              </button>
+            </div>
+            <div className="overflow-x-auto max-h-[520px]">
               <table className="dtable">
-                <thead><tr><th>动作</th><th>项目类型</th><th>项目名称</th><th>字段</th><th>变更前</th><th>变更后</th><th>操作人</th><th>时间</th></tr></thead>
+                <thead><tr><th>动作</th><th>项目类型</th><th>项目名称</th><th>字段</th><th>变更前</th><th>变更后</th><th>操作人</th><th>时间</th><th>操作</th></tr></thead>
                 <tbody>
                   {data.changeLogs.flatMap((log) => {
                     const diffs = log.diff.length ? log.diff : [{ code: '', field: '整行', before: '', after: '' }]
+                    const actionLabel = log.action === 'add' ? '新增'
+                      : log.action === 'manual' ? '手工维护'
+                        : log.action === 'undo' ? '撤回'
+                          : log.undone ? '已撤回' : '更新'
+                    const actionTone = log.action === 'add' ? 'green'
+                      : log.action === 'manual' ? 'violet'
+                        : log.action === 'undo' || log.undone ? 'dim'
+                          : 'accent' as const
                     return diffs.slice(0, 8).map((d, i) => (
-                      <tr key={`${log.id}-${d.code}-${i}`}>
-                        <td><Tag tone={log.action === 'add' ? 'green' : log.action === 'manual' ? 'violet' : 'accent'}>{log.action === 'add' ? '新增' : log.action === 'manual' ? '手工维护' : '更新'}</Tag></td>
+                      <tr key={`${log.id}-${d.code}-${i}`} className={log.undone ? 'opacity-55' : ''}>
+                        <td><Tag tone={actionTone}>{actionLabel}</Tag></td>
                         <td className="text-dim">{log.projectType}</td>
                         <td className="max-w-[220px] truncate">{log.projectName}</td>
                         <td className="text-dim">{d.field}</td>
@@ -1390,6 +1553,20 @@ export default function TransitionTool() {
                         <td className="max-w-[180px] truncate">{d.after || '—'}</td>
                         <td className="text-dim">{log.changedBy}</td>
                         <td className="text-faint">{log.changedAt}</td>
+                        <td>
+                          {i === 0 && canWrite && !log.batchId && log.action !== 'undo' ? (
+                            <Btn
+                              size="sm"
+                              disabled={busy || log.canUndo === false || Boolean(log.undone)}
+                              title={log.undone ? '已撤回' : (log.canUndo === false ? (log.undoBlockReason || '当前不可撤回') : '撤回该步变更')}
+                              onClick={() => setUndoTarget({ kind: 'log', log })}
+                            >
+                              <RotateCcw size={12} />撤回
+                            </Btn>
+                          ) : i === 0 && log.batchId ? (
+                            <span className="text-[11px] text-faint" title="请在批量上传使用「撤回本批」">批次</span>
+                          ) : null}
+                        </td>
                       </tr>
                     ))
                   })}
@@ -1398,11 +1575,13 @@ export default function TransitionTool() {
               {data.changeLogs.length === 0 && <Empty text="暂无字段变更明细" />}
             </div>
           </Card>
-          <Card title="仍需正式接口确认" className="col-span-12">
-            <div className="flex flex-wrap gap-2">
-              {(data.pending || DEFAULT_PENDING).map((p) => <Tag key={p} tone="yellow">{p}</Tag>)}
-            </div>
-          </Card>
+          {(data.pending || []).length > 0 && (
+            <Card title="仍需正式接口确认" className="col-span-12">
+              <div className="flex flex-wrap gap-2">
+                {(data.pending || []).map((p) => <Tag key={p} tone="yellow">{p}</Tag>)}
+              </div>
+            </Card>
+          )}
         </div>
       )}
 
@@ -1622,6 +1801,42 @@ export default function TransitionTool() {
         )}
       </Modal>
 
+      <Modal open={!!undoTarget} onClose={() => setUndoTarget(null)} title="确认撤回" width={480}>
+        {undoTarget && (
+          <div className="flex flex-col gap-3.5">
+            {undoTarget.kind === 'log' ? (
+              <>
+                <p className="text-[13px] text-dim leading-relaxed">
+                  将撤回「{undoTarget.log.projectName || undoTarget.log.identityKey}」的本次
+                  {undoTarget.log.action === 'add' ? '新增' : '在线编辑'}，字段将按变更前快照还原。
+                </p>
+                <div className="rounded-lg border border-line2 px-3 py-2 text-[12px] text-faint">
+                  操作人 {undoTarget.log.changedBy} · {undoTarget.log.changedAt}
+                  {undoTarget.log.diff?.length ? ` · ${undoTarget.log.diff.length} 个字段` : ''}
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-[13px] text-dim leading-relaxed">
+                  将撤回已入库批次「{undoTarget.batch.file_name}」
+                  （{undoTarget.batch.mode === 'replace' ? '整表替换，按确认前备份恢复' : `合并入库，约影响新增 ${undoTarget.batch.added_count} / 更新 ${undoTarget.batch.updated_count} 行`}）。
+                </p>
+                <div className="rounded-lg border border-line2 px-3 py-2 text-[12px] text-faint">
+                  确认人 {undoTarget.batch.confirmed_by || '—'} · {undoTarget.batch.confirmed_at || '—'}
+                </div>
+              </>
+            )}
+            <div className="text-[11.5px] text-syellow">撤回后将写入留痕并再备份一次；若项目后续又被修改，需先撤回更新步骤。</div>
+            <div className="flex justify-end gap-2.5">
+              <Btn disabled={busy} onClick={() => setUndoTarget(null)}>取消</Btn>
+              <Btn variant="primary" disabled={busy} onClick={submitUndo}>
+                <RotateCcw size={14} />确认撤回
+              </Btn>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       <Modal open={!!edit} onClose={() => { setEdit(null); setEditResultItems([]) }} title="维护专项分表记录" width={860}>
         {edit && (
           <div className="flex flex-col gap-4">
@@ -1684,6 +1899,7 @@ export default function TransitionTool() {
                   {editMajor2Options.map((x) => <option key={x}>{x}</option>)}
                 </Select>
               </Field>
+              <Field label="所中心"><Input value={edit.center || ''} onChange={(e) => setEdit({ ...edit, center: e.target.value })} /></Field>
               <Field label="责任单位" required><Input value={edit.responsibleUnit || ''} onChange={(e) => setEdit({ ...edit, responsibleUnit: e.target.value })} /></Field>
               <Field label="项目状态" required>
                 <Select value={edit.projectStatus || ''} onChange={(e) => setEdit({ ...edit, projectStatus: e.target.value })}>
@@ -1711,7 +1927,7 @@ export default function TransitionTool() {
                 <div>
                   <div className="text-[12.5px] font-semibold">成果明细（自动分行）</div>
                   <div className="text-[11px] text-faint mt-0.5">
-                    产生成果名称 / 转化成果名称 / 转化年月 / 转化型号按行一一对应；仍属同一项目行，经费统计不重复。
+                    导入时自动识别换行/逗号并拆成明细；产生成果名称与转化名称、年月、型号按行对应。仍是一条项目记录，经费统计不重复。
                   </div>
                 </div>
                 <Btn
