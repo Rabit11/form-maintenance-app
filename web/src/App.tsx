@@ -9,7 +9,7 @@ import ChangePasswordGate from './pages/ChangePasswordGate'
 
 function FormMaintenanceShell() {
   const { boot, user, logout, skipPasswordGate } = useSession()
-  const [view, setView] = useState<'form' | 'people'>('form')
+  const [view, setView] = useState<'form' | 'people'>(() => (user?.role === 'admin' ? 'people' : 'form'))
 
   if (!boot) {
     return <div className="min-h-screen flex items-center justify-center text-faint text-sm blueprint-bg">正在连接服务…</div>
@@ -34,17 +34,17 @@ function FormMaintenanceShell() {
               <div className="flex items-center rounded-lg border border-line2 overflow-hidden">
                 <button
                   type="button"
-                  onClick={() => setView('form')}
-                  className={`px-3 py-1.5 cursor-pointer ${view === 'form' ? 'bg-accent/20 text-accent' : 'text-dim hover:text-ink'}`}
+                  onClick={() => setView('people')}
+                  className={`px-3 py-1.5 cursor-pointer ${view === 'people' ? 'bg-accent/20 text-accent' : 'text-dim hover:text-ink'}`}
                 >
-                  表单维护
+                  人员权限
                 </button>
                 <button
                   type="button"
-                  onClick={() => setView('people')}
-                  className={`px-3 py-1.5 cursor-pointer border-l border-line2 ${view === 'people' ? 'bg-accent/20 text-accent' : 'text-dim hover:text-ink'}`}
+                  onClick={() => setView('form')}
+                  className={`px-3 py-1.5 cursor-pointer border-l border-line2 ${view === 'form' ? 'bg-accent/20 text-accent' : 'text-dim hover:text-ink'}`}
                 >
-                  人员权限
+                  表单维护
                 </button>
               </div>
             )}

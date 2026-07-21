@@ -66,7 +66,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (u) {
           setApiUser(u.id)
           setUser(u)
-          setSkipPasswordGate(localStorage.getItem('srpm.skipPwdGate') === '1')
+          // 仍须改密时忽略历史「演示跳过改密」标记，避免业务接口 403 导致白屏转圈
+          if (Number(u.must_change_password) === 1) {
+            localStorage.removeItem('srpm.skipPwdGate')
+            setSkipPasswordGate(false)
+          } else {
+            setSkipPasswordGate(localStorage.getItem('srpm.skipPwdGate') === '1')
+          }
         } else {
           localStorage.removeItem('srpm.user')
           localStorage.removeItem('srpm.skipPwdGate')

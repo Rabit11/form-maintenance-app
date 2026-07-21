@@ -220,7 +220,7 @@ export interface TransitionChangeLog {
   identityKey: string
   projectType: string
   projectName: string
-  action: 'add' | 'update' | 'manual' | 'undo'
+  action: 'add' | 'update' | 'manual' | 'delete' | 'undo'
   changedBy: string
   changedAt: string
   sourceFile: string

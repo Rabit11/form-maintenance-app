@@ -465,6 +465,8 @@ export function ensureAuthAccounts(db) {
 
   // 为尚无密码的账号写入初始密码（=工号），并标记须改密
   ensureInitialPasswords(db);
+  // 内置演示账号允许跳过强制改密直接进入（人员管理新建账号仍须首次改密）
+  allowDemoSkipPasswordChange(db);
 }
 
 /** 缺省密码：工号；已有 password_hash 的不覆盖 */
@@ -477,4 +479,15 @@ export function ensureInitialPasswords(db) {
     if (row.password_hash) continue;
     setPwd.run(hashPassword(row.emp_no), row.id);
   }
+}
+
+/** 登录页「角色演示」内置账号：不强制改密，可一键进入 */
+const DEMO_LOGIN_IDS = [
+  'u_super', 'u_leader', 'u_hq', 'u_hq_staff',
+  'u_ch_miit', 'u_ch_most', 'u_ch_ndrc', 'u_ch_shkc', 'u_ch_zgsf',
+];
+
+export function allowDemoSkipPasswordChange(db) {
+  const stmt = db.prepare('UPDATE users SET must_change_password=0 WHERE id=?');
+  for (const id of DEMO_LOGIN_IDS) stmt.run(id);
 }

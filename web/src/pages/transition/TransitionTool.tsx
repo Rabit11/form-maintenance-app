@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { CheckCircle2, ChevronDown, Columns3, Download, FileSpreadsheet, Filter, RotateCcw, Save, Search, UploadCloud, Users, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Columns3, Download, FileSpreadsheet, Filter, RotateCcw, Save, Search, Trash2, UploadCloud, Users, XCircle } from 'lucide-react'
 import { api, apiDownload, apiUpload } from '../../api/client'
 import type { TransitionCascade, TransitionChangeLog, TransitionImportBatch, TransitionRow, TransitionToolData } from '../../api/types'
 import { Btn, Card, Empty, Field, Input, KPI, Modal, Select, Tag, Textarea, useToast } from '../../components/ui'
@@ -356,13 +356,25 @@ export default function TransitionTool() {
   const uploadRef = useRef<HTMLInputElement | null>(null)
   const uploadModeRef = useRef<UploadMode>('merge')
 
+  const [loadError, setLoadError] = useState('')
   const load = useCallback(() => {
+    setLoadError('')
     api.get<TransitionToolData>('/transition-tool').then((d) => {
       setData(d)
       const autoNo = normalizeOperatorNo(d.access?.defaultOperatorNo || user?.emp_no || '')
       if (autoNo) setOperatorNo((prev) => normalizeOperatorNo(prev) || autoNo)
+    }).catch((e) => {
+      const msg = (e as Error).message || '加载失败'
+      setLoadError(msg)
+      setData(null)
+      toast(msg, 'err')
+      // 未改密却进入了主界面（如演示跳过改密）：退回强制改密
+      if (/修改密码|须先修改密码/.test(msg)) {
+        localStorage.removeItem('srpm.skipPwdGate')
+        window.location.reload()
+      }
     })
-  }, [user?.emp_no])
+  }, [user?.emp_no, toast])
   useEffect(load, [load])
 
   useEffect(() => {
@@ -992,6 +1004,26 @@ export default function TransitionTool() {
     } catch (e) { toast((e as Error).message, 'err') } finally { setBusy(false) }
   }
 
+  const removeProject = async () => {
+    if (!edit?.id) return
+    const name = edit.name || edit.serial || edit.id
+    if (!window.confirm(`确认删除项目「${name}」的全部台账信息？\n\n删除后可在「校验报告」中撤回；删除前会自动备份。`)) return
+    const no = requireOperatorNo()
+    if (!no) return
+    setBusy(true)
+    try {
+      await api.post('/transition-tool/records/delete', { id: edit.id, operatorNo: no })
+      toast(`已删除项目「${name}」（工号 ${no}）`)
+      setEdit(null)
+      setEditResultItems([])
+      load()
+    } catch (e) {
+      toast((e as Error).message, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const toggleColumn = (code: string) => {
     setHiddenCols((old) => (old.includes(code) ? old.filter((x) => x !== code) : [...old, code]))
   }
@@ -1022,7 +1054,19 @@ export default function TransitionTool() {
     finally { setBusy(false) }
   }
 
-  if (!data) return <div className="text-faint text-sm py-20 text-center">正在加载表单维护…</div>
+  if (!data) {
+    return (
+      <div className="text-faint text-sm py-20 text-center flex flex-col items-center gap-3">
+        <div>{loadError ? '表单维护加载失败' : '正在加载表单维护…'}</div>
+        {loadError && (
+          <>
+            <div className="text-syellow text-[12.5px] max-w-[520px] leading-relaxed">{loadError}</div>
+            <Btn onClick={load}>重试</Btn>
+          </>
+        )}
+      </div>
+    )
+  }
 
   const typeSelectOptions = isOwnerMode && ownedTypes.length
     ? ownedTypes
@@ -1536,13 +1580,15 @@ export default function TransitionTool() {
                   {data.changeLogs.flatMap((log) => {
                     const diffs = log.diff.length ? log.diff : [{ code: '', field: '整行', before: '', after: '' }]
                     const actionLabel = log.action === 'add' ? '新增'
-                      : log.action === 'manual' ? '手工维护'
-                        : log.action === 'undo' ? '撤回'
-                          : log.undone ? '已撤回' : '更新'
+                      : log.action === 'delete' ? '删除'
+                        : log.action === 'manual' ? '手工维护'
+                          : log.action === 'undo' ? '撤回'
+                            : log.undone ? '已撤回' : '更新'
                     const actionTone = log.action === 'add' ? 'green'
-                      : log.action === 'manual' ? 'violet'
-                        : log.action === 'undo' || log.undone ? 'dim'
-                          : 'accent' as const
+                      : log.action === 'delete' ? 'red'
+                        : log.action === 'manual' ? 'violet'
+                          : log.action === 'undo' || log.undone ? 'dim'
+                            : 'accent' as const
                     return diffs.slice(0, 8).map((d, i) => (
                       <tr key={`${log.id}-${d.code}-${i}`} className={log.undone ? 'opacity-55' : ''}>
                         <td><Tag tone={actionTone}>{actionLabel}</Tag></td>
@@ -2003,9 +2049,18 @@ export default function TransitionTool() {
                 {edit.validation.missing.concat(edit.validation.warnings).join('；') || '保存后将重新校验'}
               </div>
             )}
-            <div className="flex justify-end gap-2.5">
-              <Btn onClick={() => { setEdit(null); setEditResultItems([]) }}>取消</Btn>
-              {canWrite && <Btn variant="primary" disabled={busy || !editFunding?.ok} onClick={save}><Save size={14} />保存并留痕</Btn>}
+            <div className="flex justify-between gap-2.5 flex-wrap">
+              <div>
+                {canWrite && rowWritable(edit) && (
+                  <Btn variant="danger" disabled={busy} onClick={removeProject} title="删除该项目在总表中的全部信息">
+                    <Trash2 size={14} />删除项目
+                  </Btn>
+                )}
+              </div>
+              <div className="flex gap-2.5">
+                <Btn onClick={() => { setEdit(null); setEditResultItems([]) }}>取消</Btn>
+                {canWrite && <Btn variant="primary" disabled={busy || !editFunding?.ok} onClick={save}><Save size={14} />保存并留痕</Btn>}
+              </div>
             </div>
           </div>
         )}

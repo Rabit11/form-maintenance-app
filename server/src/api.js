@@ -2147,8 +2147,16 @@ function transitionDiff(before, after) {
 
 function insertTransitionChangeLog({ batchId = null, row, action, userName, sourceFile = '', before = null, changedAt = null }) {
   const normalized = normalizeTransitionRow(row);
-  const diff = transitionDiff(before, normalized);
-  if (action !== 'add' && action !== 'undo' && diff.length === 0) return null;
+  let diff = transitionDiff(before, normalized);
+  if (action === 'delete') {
+    diff = [{
+      code: '_row',
+      field: '整行',
+      before: (before && (before.name || before.serial)) || normalized.name || normalized.serial || '',
+      after: '（已删除）',
+    }];
+  }
+  if (action !== 'add' && action !== 'undo' && action !== 'delete' && diff.length === 0) return null;
   const info = db.prepare(`INSERT INTO transition_change_logs
     (batch_id,identity_key,project_type,project_name,action,changed_by,changed_at,diff_json,source_file,before_json,after_json,undone,undo_of)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,0,NULL)`)
@@ -2162,8 +2170,8 @@ function insertTransitionChangeLog({ batchId = null, row, action, userName, sour
       changedAt || NOW(),
       JSON.stringify(diff),
       sourceFile || normalized.sourceFile || '',
-      before ? JSON.stringify(normalizeTransitionRow(before)) : null,
-      JSON.stringify(normalized),
+      before ? JSON.stringify(normalizeTransitionRow(before)) : (action === 'delete' ? JSON.stringify(normalized) : null),
+      action === 'delete' ? null : JSON.stringify(normalized),
     );
   return info.lastInsertRowid;
 }
@@ -2185,7 +2193,7 @@ function mapTransitionChangeLog(row, user = null, access = null) {
     undoOf: row.undo_of ?? null,
     undoneBy: row.undone_by || null,
     undoneAt: row.undone_at || null,
-    hasSnapshot: Boolean(row.before_json) || row.action === 'add',
+    hasSnapshot: Boolean(row.before_json) || row.action === 'add' || row.action === 'delete',
   };
   if (user) {
     const canWriteRow = (r) => canWriteTransitionRow(access || formAccess(user), user, r);
@@ -2216,7 +2224,9 @@ function insertUndoTrace({ ofLog, actor, at, note = '' }) {
   });
   const diff = ofLog.action === 'add'
     ? [{ code: '_row', field: '整行', before: ofLog.project_name || '', after: '（已删除）' }]
-    : transitionDiff(after, before || {});
+    : ofLog.action === 'delete'
+      ? [{ code: '_row', field: '整行', before: '（已删除）', after: ofLog.project_name || '已恢复' }]
+      : transitionDiff(after, before || {});
   db.prepare(`INSERT INTO transition_change_logs
     (batch_id,identity_key,project_type,project_name,action,changed_by,changed_at,diff_json,source_file,before_json,after_json,undone,undo_of)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?)`)
@@ -3282,6 +3292,58 @@ r.post('/transition-tool/records', (req, res) => {
   insertTransitionChangeLog({ row: next, action: before ? 'manual' : 'add', userName: actor, before, changedAt: at });
   audit(actor, '表单维护', '分表维护', `工号 ${operatorNo} · ${at} 保存 ${next.projectType || '专项分表'}：${next.name || next.code}`);
   res.json({ ok: true, row: { ...next, validation, canWriteRow: true } });
+});
+
+/** 删除单条项目全部台账信息（留痕可撤回） */
+r.post('/transition-tool/records/delete', async (req, res) => {
+  const ctx = ensureTransitionWriter(req, res);
+  if (!ctx) return;
+  const { user, access } = ctx;
+  const operatorNo = requireOperatorNo(req, res, user);
+  if (!operatorNo) return;
+  const actor = formatOperatorActor(user.name, operatorNo);
+  const at = NOW();
+  const body = req.body || {};
+  const id = cellText(body.id);
+  const identityKey = cellText(body.identityKey);
+  let stored = null;
+  if (identityKey) {
+    stored = db.prepare('SELECT id, identity_key, row_json FROM transition_records WHERE identity_key=?').get(identityKey);
+  }
+  if (!stored && id) {
+    stored = db.prepare('SELECT id, identity_key, row_json FROM transition_records WHERE id=?').get(id);
+  }
+  if (!stored) return res.status(404).json({ error: '未找到该项目记录，可能已被删除' });
+  const before = normalizeTransitionRow(J(stored.row_json, {}));
+  if (!canWriteTransitionRow(access, user, before)) {
+    return res.status(403).json({ error: '无权删除该项目（超出本人层级渠道/单位/项目类型范围）' });
+  }
+  const backup = await safeBackup('pre-delete-record', actor);
+  if (backup?.error) {
+    return res.status(500).json({ error: `删除前备份失败，已中止：${backup.error}` });
+  }
+  db.transaction(() => {
+    deleteTransitionRecordByIdentity(stored.identity_key);
+    insertTransitionChangeLog({
+      row: before,
+      action: 'delete',
+      userName: actor,
+      before,
+      changedAt: at,
+    });
+  })();
+  syncTransitionKv();
+  audit(actor, '表单维护', '删除项目', `工号 ${operatorNo} · ${before.name || before.serial || stored.identity_key}`);
+  res.json({
+    ok: true,
+    deleted: {
+      id: before.id || stored.id,
+      identityKey: stored.identity_key,
+      name: before.name || '',
+      projectType: transitionProjectType(before),
+    },
+    backup,
+  });
 });
 
 r.post('/transition-tool/import-demo', async (req, res) => {

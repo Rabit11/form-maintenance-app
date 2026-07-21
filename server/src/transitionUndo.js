@@ -47,7 +47,7 @@ export function laterChangeExists(db, identityKey, afterId) {
 export function logHasUndoSnapshot(log) {
   if (!log || Number(log.undone) === 1 || log.action === 'undo') return false;
   if (log.action === 'add') return true;
-  if (log.action === 'update' || log.action === 'manual') {
+  if (log.action === 'delete' || log.action === 'update' || log.action === 'manual') {
     return Boolean(log.before_json && String(log.before_json).trim());
   }
   return false;
@@ -78,7 +78,10 @@ export function evaluateLogUndo(db, log, user, { canWriteRow } = {}) {
     }
     if (typeof canWriteRow === 'function') {
       let row = null;
-      try { row = log.after_json ? JSON.parse(log.after_json) : null; } catch { row = null; }
+      try {
+        row = log.after_json ? JSON.parse(log.after_json)
+          : (log.before_json ? JSON.parse(log.before_json) : null);
+      } catch { row = null; }
       if (row && !canWriteRow(row)) {
         return { ok: false, reason: '当前账号对该项目无写权限，无法撤回' };
       }
@@ -206,6 +209,12 @@ export function restoreTransitionRecordsFromBackup(liveDb, backupPath, upsertRow
 export function applyLogRollback(db, log, { upsertRow, deleteByIdentity }) {
   if (log.action === 'add') {
     deleteByIdentity(log.identity_key);
+    return;
+  }
+  if (log.action === 'delete') {
+    if (!log.before_json) throw new Error('历史记录不支持撤回（缺少删除前快照）');
+    const before = JSON.parse(log.before_json);
+    upsertRow(before, null);
     return;
   }
   if (log.action === 'update' || log.action === 'manual') {
